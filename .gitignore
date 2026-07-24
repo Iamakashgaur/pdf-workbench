@@ -1,0 +1,70 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Converter output — CONTAINS CUSTOMER DATA
+# ─────────────────────────────────────────────────────────────────────────────
+# Generated workbooks carry real customer names, order numbers and amounts
+# taken from supplier invoices. Never commit them.
+output/
+*.xlsx
+*.xls
+*.csv
+
+# Source invoices, if anyone drops them into the project to convert.
+# How_It_Works.pdf is force-included below.
+*.pdf
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Documentation that IS tracked
+# ─────────────────────────────────────────────────────────────────────────────
+!How_It_Works.pdf
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Virtual environments  (~440 MB — rebuild with install.bat)
+# ─────────────────────────────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Python
+# ─────────────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Runtime artefacts
+# ─────────────────────────────────────────────────────────────────────────────
+# A timestamped log is written on every run; they accumulate quickly.
+logs/
+# Old test scratch directory (the suite now uses %USERPROFILE%/.codex_test_tmp).
+.test_tmp/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Local overrides
+# ─────────────────────────────────────────────────────────────────────────────
+# config.json IS tracked — it holds the shared defaults.
+# Keep machine-specific paths (tesseract_path, java_path) in a local copy:
+config.local.json
+.env
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Editors / OS
+# ─────────────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Claude Code
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared project settings are tracked; personal permission grants are not.
+.claude/settings.local.json

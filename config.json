@@ -1,0 +1,43 @@
+{
+  "_comment": "PDF to Excel Converter – Configuration. All keys are optional; missing keys use built-in defaults.",
+
+  "output_dir": "output",
+  "log_dir": "logs",
+
+  "table_extraction_method": "auto",
+
+  "ocr_language": "eng",
+  "ocr_dpi": 300,
+  "ocr_confidence_threshold": 60,
+
+  "tesseract_path": null,
+  "java_path": null,
+
+  "remove_empty_rows": true,
+  "remove_empty_cols": true,
+
+  "add_metadata_sheet": true,
+  "freeze_header_row": true,
+  "apply_table_style": true,
+
+  "header_color": "1F4E79",
+  "alternating_row_color": "D6E4F0",
+
+  "max_col_width": 50,
+  "min_col_width": 8,
+  "max_sheet_name_length": 31,
+
+  "batch_summary_report": true,
+  "preview_rows": 10,
+
+  "_notes": {
+    "table_extraction_method": "auto tries pdfplumber → camelot → tabula in order",
+    "ocr_language": "eng = English; fra = French; deu = German; chi_sim = Chinese Simplified. Install extra Tesseract language packs.",
+    "ocr_dpi": "Higher = better OCR quality but slower. 300 recommended; 150 for speed.",
+    "ocr_confidence_threshold": "0–100. Only include OCR words above this confidence. 60 is a good balance.",
+    "header_color": "Hex color (no #) for header row background.",
+    "alternating_row_color": "Hex color (no #) for alternating data row shading.",
+    "tesseract_path": "Full path to tesseract.exe on Windows if not on PATH. Example: C:/Program Files/Tesseract-OCR/tesseract.exe",
+    "java_path": "Full path to java.exe if not on PATH. Required only for tabula-py."
+  }
+}

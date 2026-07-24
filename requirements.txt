@@ -1,0 +1,53 @@
+# PDF to Excel Converter – Dependencies
+#
+#   pip install -r requirements.txt
+#
+# Everything listed here installs cleanly from PyPI with no system software.
+# The two optional extraction engines that DO need system software live in
+# requirements-optional.txt - see the bottom of this file.
+
+# ── Core (required) ───────────────────────────────────────────────────────────
+# pandas, numpy and openpyxl are imported unconditionally; the tool will not
+# start without them. Pinned below 3.0: the code targets the pandas 2.x API.
+pandas>=2.0.0,<3.0.0
+numpy>=1.24.0
+openpyxl>=3.1.0
+
+# ── PDF reading (required in practice) ────────────────────────────────────────
+# Import-gated, but without both of these there is no way to read a PDF.
+# pdfplumber also supplies the word positions used to read the report's
+# column layout, which is how rows are parsed.
+pdfplumber>=0.10.0           # layout-aware text, tables, and word geometry
+PyMuPDF>=1.23.0              # page classification and rendering (fitz)
+
+# ── OCR for scanned PDFs ──────────────────────────────────────────────────────
+# Only used for image-based pages. Needs the Tesseract engine installed
+# separately (see below); without it, scanned pages are skipped with a warning.
+pytesseract>=0.3.10          # Python wrapper for Tesseract
+Pillow>=10.0.0               # image enhancement before OCR
+
+# ── Interfaces ────────────────────────────────────────────────────────────────
+streamlit>=1.30.0            # web UI (app.py) - launched by convert.bat
+rich>=13.0.0                 # progress bars and tables in the CLI
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+reportlab>=4.0.0             # builds synthetic PDFs for the test suite
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OPTIONAL EXTRACTION ENGINES  ->  requirements-optional.txt
+#
+# Camelot and Tabula are fallbacks, tried only when pdfplumber finds no tables.
+# Each needs non-pip system software (Ghostscript / Java), so installing them
+# is a separate, deliberate step:
+#
+#     pip install -r requirements-optional.txt
+#
+# The tool detects at import whether they are present and simply skips them if
+# not. `python pdf_to_excel.py --check-deps` shows the current status.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── System software (NOT pip-installable) ─────────────────────────────────────
+# Tesseract OCR - required only for scanned PDFs:
+#   Windows : https://github.com/UB-Mannheim/tesseract/wiki
+#   macOS   : brew install tesseract
+#   Linux   : sudo apt-get install tesseract-ocr

@@ -1,0 +1,16 @@
+# Streamlit theme.
+#
+# primaryColor kills the stock #FF4B4B red that BaseWeb paints on the checkbox
+# tick, radio dot, slider track and spinner — accents our <style> block cannot
+# always reach, since they live inside BaseWeb component internals. Setting it
+# here catches them at the source so they read as ink, not near-error-red.
+#
+# Note: config.toml is static and cannot follow prefers-color-scheme, so the
+# app's <style> block owns light/dark theming for everything it styles; this
+# file only sets the one accent Streamlit paints before our CSS applies.
+
+[theme]
+primaryColor = "#3f3f46"
+
+[browser]
+gatherUsageStats = false
