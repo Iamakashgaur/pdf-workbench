@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Iamakashgaur/PDF-to-Excel-Converter/actions/workflows/ci.yml/badge.svg)](https://github.com/Iamakashgaur/PDF-to-Excel-Converter/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.13-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-67%20passing-brightgreen)](test_pdf_to_excel.py)
+[![Tests](https://img.shields.io/badge/tests-78%20passing-brightgreen)](test_pdf_to_excel.py)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)
 
 Turns supplier order reports from PDF into reconciled Excel workbooks — and tells you,
@@ -94,7 +94,7 @@ being the moment you start hoping.
 | **Design under constraint** | Three extraction engines tried in order, two of them optional and often absent. Availability is import-gated; missing engines degrade honestly instead of crashing. |
 | **A performance fix** | `_PDFHandles` opens each document once per run instead of once per page, using explicit sentinels — a zero-page PDF is falsy, so truthiness checks leaked handles. |
 | **A measurement bug worth the comment** | `Tables Found` and `Rows Extracted` are deliberately separate. Conflating them displayed a 95-row report as "95 tables". |
-| **Test strategy** | 67 tests. Synthetic PDFs via reportlab for the pipeline; hand-built word-position fixtures for the geometry parser, so column logic is tested without a PDF in the loop; and a set that asserts this README still matches the code it documents. |
+| **Test strategy** | 78 tests. Synthetic PDFs via reportlab for the pipeline; hand-built word-position fixtures for the geometry parser, so column logic is tested without a PDF in the loop; and a set that asserts this README still matches the code it documents. |
 | **CI** | Ubuntu + Windows × Python 3.11/3.13, deliberately green *without* the optional engines installed. |
 
 ## Known limitations
@@ -107,6 +107,9 @@ Stated plainly, because a tool that oversells itself is the problem this one exi
 - Scanned pages need Tesseract installed. Without it they are skipped and reported,
   never silently dropped.
 - `java_path` in `config.json` is currently unused; put Java on `PATH` for tabula.
+- `--to-pdf` converts documents *into* PDF and stops there; it does not chain
+  into extraction, and there is no PDF → Word/PowerPoint direction. It needs
+  LibreOffice installed, and is available from the CLI only — not the web UI.
 
 ---
 
@@ -121,6 +124,7 @@ Stated plainly, because a tool that oversells itself is the problem this one exi
 | **Excel output** | Styled headers, alternating rows, auto column widths, frozen panes |
 | **Batch mode** | Entire folder with progress bar + summary report |
 | **Multiple formats** | `.xlsx` or `.csv` export |
+| **Documents → PDF** | `.docx`/`.xlsx`/`.pptx`/`.odt`/`.rtf`/`.html` into PDF via LibreOffice (`--to-pdf`, optional) |
 | **Preview** | Print table preview before saving |
 | **GUI** | Optional Streamlit web app |
 | **Configurable** | All settings via `config.json` |
@@ -156,7 +160,22 @@ After installing on Windows, add Tesseract to PATH **or** set `tesseract_path` i
 }
 ```
 
-### 3. Optional extraction engines
+### 3. LibreOffice — only for `--to-pdf`
+
+Needed solely to convert documents *into* PDF. Everything else works without it.
+
+| OS | Install |
+|---|---|
+| Windows | [libreoffice.org/download](https://www.libreoffice.org/download/download-libreoffice/) |
+| macOS | `brew install --cask libreoffice` |
+| Linux | `sudo apt-get install libreoffice` |
+
+Put `soffice` on PATH, **or** set the path in `config.json`:
+```json
+{ "libreoffice_path": "C:/Program Files/LibreOffice/program/soffice.exe" }
+```
+
+### 4. Optional extraction engines
 
 **Not required.** Camelot and Tabula are fallback table engines, tried only when pdfplumber finds no tables. Each needs system software that pip cannot install, which is why they are kept separate — a failure here must not block a working install.
 
@@ -211,6 +230,28 @@ python pdf_to_excel.py -d ./pdfs/ -o ./output/
 python pdf_to_excel.py -d ./invoices/ -o ./results/ --preview
 ```
 
+### Documents → PDF
+
+The one direction that writes *into* PDF, for when a report arrives as `.docx` or
+`.xlsx` and has to be a PDF before anything else can read it. Needs LibreOffice
+([see below](#3-libreoffice--only-for---to-pdf)).
+
+```bash
+# Single document
+python pdf_to_excel.py report.docx --to-pdf -o ./pdfs/
+
+# A whole folder, recursively
+python pdf_to_excel.py -d ./documents/ --to-pdf -o ./pdfs/
+```
+
+Handles `.doc` `.docx` `.odt` `.rtf` `.txt` · `.xls` `.xlsx` `.ods` `.csv` ·
+`.ppt` `.pptx` `.odp` · `.html` `.htm`. Anything else is refused by name before
+LibreOffice is launched, rather than failing obscurely inside it.
+
+> Conversion is only reported as successful if the PDF is actually on disk.
+> LibreOffice exits `0` in cases where it wrote nothing at all, so the exit code
+> is not trusted on its own.
+
 ### GUI (Streamlit)
 
 The web UI lives in `app.py`, not in `pdf_to_excel.py`:
@@ -258,6 +299,8 @@ Options:
   --ocr-lang LANG       Tesseract language code (default: eng)
   --no-meta             Omit metadata sheet from output
   --keep-empty          Keep empty rows and columns
+  --to-pdf              Convert documents INTO PDF via LibreOffice, instead of
+                        reading a PDF. Works with -d for a folder
   --gui                 Print the GUI launch command and exit (does not start it)
   --check-deps          Print dependency status and exit
 ```
@@ -281,6 +324,7 @@ All settings are optional. Missing keys use built-in defaults.
 
   "tesseract_path": null,
   "java_path": null,
+  "libreoffice_path": null,
 
   "remove_empty_rows": true,
   "remove_empty_cols": true,
@@ -316,6 +360,7 @@ All settings are optional. Missing keys use built-in defaults.
 | `preview_rows` | `10` | Rows shown in the Streamlit preview table |
 | `tesseract_path` | `null` | Full path to `tesseract.exe` if it is not on PATH |
 | `java_path` | `null` | Reserved. Currently unused — put Java on PATH for tabula |
+| `libreoffice_path` | `null` | Full path to `soffice` if it is not on PATH. Only used by `--to-pdf` |
 
 The `_Metadata` sheet records the source file, page counts, and the **Unparsed Report Rows** total — see [Rows that don't match](#rows-that-dont-match). Set `add_metadata_sheet` to `false` to omit it.
 

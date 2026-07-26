@@ -13,6 +13,9 @@ import warnings
 import io
 import re
 import csv
+import shutil
+import tempfile
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Union, List, Dict, Any, Tuple
@@ -104,6 +107,7 @@ DEFAULT_CONFIG = {
     "batch_summary_report": True,
     "tesseract_path": None,
     "java_path": None,
+    "libreoffice_path": None,
     "preview_rows": 10,
     "max_sheet_name_length": 31
 }
@@ -1906,6 +1910,210 @@ class BatchProcessor:
 
 
 # ────────────────────────────────────────────────────────────
+# DOCUMENT → PDF  (headless LibreOffice)
+# ────────────────────────────────────────────────────────────
+
+# A fixed list rather than "try anything". An unsupported file otherwise fails
+# deep inside soffice with an opaque message, long after the caller could have
+# been told plainly that the format is not handled.
+DOC_TO_PDF_EXTENSIONS = {
+    ".doc", ".docx", ".odt", ".rtf", ".txt",
+    ".xls", ".xlsx", ".ods", ".csv",
+    ".ppt", ".pptx", ".odp",
+    ".html", ".htm",
+}
+
+# Default install locations, checked only after PATH.
+_LIBREOFFICE_HINTS = (
+    r"C:\Program Files\LibreOffice\program\soffice.exe",
+    r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    "/usr/bin/soffice",
+    "/usr/bin/libreoffice",
+    "/usr/local/bin/soffice",
+    "/snap/bin/libreoffice",
+)
+
+_UNRESOLVED = object()   # binary lookup not attempted yet
+
+
+class DocumentToPDFConverter:
+    """Convert office documents to PDF with a headless LibreOffice.
+
+    LibreOffice is system software pip cannot install, so it follows the same
+    rule as Tesseract, Ghostscript and Java: located at runtime, reported by
+    --check-deps, and when it is absent the caller gets a clear message instead
+    of a crash or an empty output directory.
+
+    This is the one direction the tool converts *into* PDF. Everything else
+    here reads a PDF; this produces one, which is useful when a report arrives
+    as .docx or .xlsx and has to become a PDF before anything else can run.
+    """
+
+    def __init__(self, config: dict, logger: logging.Logger):
+        self.config = config
+        self.logger = logger
+        self._binary: Any = _UNRESOLVED
+
+    # ── locating LibreOffice ─────────────────────────────────
+    def binary(self) -> Optional[str]:
+        if self._binary is _UNRESOLVED:
+            self._binary = self._find_binary()
+        return self._binary
+
+    def _find_binary(self) -> Optional[str]:
+        configured = self.config.get("libreoffice_path")
+        if configured:
+            if os.path.isfile(configured):
+                return configured
+            # Say so rather than silently searching elsewhere: a wrong path in
+            # config is a mistake the user wants to hear about.
+            self.logger.warning(
+                f"libreoffice_path is set to '{configured}' but no file is there. "
+                f"Looking for LibreOffice on PATH instead."
+            )
+
+        for name in ("soffice", "libreoffice"):
+            found = shutil.which(name)
+            if found:
+                return found
+
+        for path in _LIBREOFFICE_HINTS:
+            if os.path.isfile(path):
+                return path
+
+        return None
+
+    def available(self) -> bool:
+        return self.binary() is not None
+
+    # ── command construction ─────────────────────────────────
+    @staticmethod
+    def _command(
+        binary: str, src: str, out_dir: str, profile_dir: str
+    ) -> List[str]:
+        """Build the soffice invocation.
+
+        `-env:UserInstallation` gives this run a private profile directory.
+        Without it, starting soffice while another instance holds the default
+        profile makes the new process hand off the job and exit 0 immediately -
+        having written nothing. That failure is silent, produces a success exit
+        code, and is why batch runs and CI need the isolation.
+        """
+        return [
+            binary,
+            f"-env:UserInstallation={Path(profile_dir).as_uri()}",
+            "--headless",
+            "--norestore",
+            "--invisible",
+            "--convert-to", "pdf",
+            "--outdir", out_dir,
+            src,
+        ]
+
+    # ── conversion ───────────────────────────────────────────
+    def convert(
+        self, input_path: str, output_dir: str, timeout: int = 180
+    ) -> Dict[str, Any]:
+        """Convert one document to PDF. Returns a result dict; never raises."""
+        result: Dict[str, Any] = {
+            "input": input_path,
+            "output": None,
+            "success": False,
+            "error": None,
+            "duration_sec": 0.0,
+        }
+        start = datetime.now()
+
+        try:
+            ext = Path(input_path).suffix.lower()
+
+            if not os.path.exists(input_path):
+                result["error"] = "File not found"
+                return result
+            if ext == ".pdf":
+                result["error"] = "Already a PDF"
+                return result
+            if ext not in DOC_TO_PDF_EXTENSIONS:
+                result["error"] = (
+                    f"Unsupported format '{ext}'. Supported: "
+                    + ", ".join(sorted(DOC_TO_PDF_EXTENSIONS))
+                )
+                return result
+
+            binary = self.binary()
+            if binary is None:
+                result["error"] = (
+                    "LibreOffice not found. Install it and put 'soffice' on PATH, "
+                    "or set 'libreoffice_path' in config.json."
+                )
+                return result
+
+            os.makedirs(output_dir, exist_ok=True)
+            expected = os.path.join(output_dir, Path(input_path).stem + ".pdf")
+
+            with tempfile.TemporaryDirectory(prefix="lo_profile_") as profile:
+                cmd = self._command(binary, os.path.abspath(input_path),
+                                    os.path.abspath(output_dir), profile)
+                self.logger.debug("LibreOffice: " + " ".join(cmd))
+                try:
+                    proc = subprocess.run(
+                        cmd, capture_output=True, text=True, timeout=timeout
+                    )
+                except subprocess.TimeoutExpired:
+                    result["error"] = f"LibreOffice timed out after {timeout}s"
+                    return result
+                except OSError as e:
+                    result["error"] = f"Could not run LibreOffice: {e}"
+                    return result
+
+            # The exit code alone is not trustworthy - soffice returns 0 in
+            # cases where it wrote nothing at all - so the output file is the
+            # thing actually checked.
+            if not os.path.isfile(expected):
+                detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+                result["error"] = (
+                    f"LibreOffice produced no PDF (exit {proc.returncode})"
+                    + (f": {detail[-1][:200]}" if detail else "")
+                )
+                return result
+
+            result["output"] = expected
+            result["success"] = True
+            self.logger.info(f"Converted '{input_path}' -> '{expected}'")
+            return result
+
+        except Exception as e:                       # pragma: no cover - defensive
+            self.logger.exception(f"Document conversion failed for '{input_path}': {e}")
+            result["error"] = str(e)
+            return result
+        finally:
+            result["duration_sec"] = (datetime.now() - start).total_seconds()
+
+    def convert_folder(
+        self, input_dir: str, output_dir: str
+    ) -> List[Dict[str, Any]]:
+        """Convert every supported document in a folder, recursively."""
+        files = sorted({
+            p.resolve()
+            for p in Path(input_dir).glob("**/*")
+            if p.is_file() and p.suffix.lower() in DOC_TO_PDF_EXTENSIONS
+        })
+
+        if not files:
+            _print(f"No convertible documents found in: {input_dir}")
+            return []
+
+        results = []
+        for i, path in enumerate(files, 1):
+            print(f"[{i}/{len(files)}] Converting: {path.name}")
+            r = self.convert(str(path), output_dir)
+            results.append(r)
+            print(f"  → {'OK' if r['success'] else 'FAIL: ' + str(r['error'])}")
+        return results
+
+
+# ────────────────────────────────────────────────────────────
 # UTILITIES
 # ────────────────────────────────────────────────────────────
 
@@ -1930,7 +2138,17 @@ def _preview_dataframe(df: pd.DataFrame, label: str, n: int = 10) -> None:
         print(df.head(n).to_string())
 
 
-def check_dependencies() -> Dict[str, bool]:
+def libreoffice_present(config: Optional[dict] = None) -> bool:
+    """Whether a headless LibreOffice can be found, without running it."""
+    configured = (config or {}).get("libreoffice_path")
+    if configured and os.path.isfile(configured):
+        return True
+    if shutil.which("soffice") or shutil.which("libreoffice"):
+        return True
+    return any(os.path.isfile(p) for p in _LIBREOFFICE_HINTS)
+
+
+def check_dependencies(config: Optional[dict] = None) -> Dict[str, bool]:
     deps = {
         "pdfplumber": PDFPLUMBER_AVAILABLE,
         "PyMuPDF (fitz)": PYMUPDF_AVAILABLE,
@@ -1942,12 +2160,14 @@ def check_dependencies() -> Dict[str, bool]:
         "pandas": True,
         "openpyxl": True,
         "numpy": True,
+        # System software, not a Python package - only needed for --to-pdf.
+        "LibreOffice (--to-pdf)": libreoffice_present(config),
     }
     return deps
 
 
-def print_dependency_status() -> None:
-    deps = check_dependencies()
+def print_dependency_status(config: Optional[dict] = None) -> None:
+    deps = check_dependencies(config)
     if RICH_AVAILABLE:
         t = Table(title="Dependency Status", show_header=True)
         t.add_column("Library", style="cyan")
@@ -2024,6 +2244,10 @@ Examples:
   # Use specific config
   python pdf_to_excel.py report.pdf --config my_config.json
 
+  # Convert documents INTO PDF (needs LibreOffice)
+  python pdf_to_excel.py report.docx --to-pdf -o ./pdfs/
+  python pdf_to_excel.py -d ./documents/ --to-pdf -o ./pdfs/
+
   # Launch the web UI (it lives in app.py, not here)
   streamlit run app.py
 
@@ -2051,6 +2275,10 @@ Examples:
                    help="Omit metadata sheet")
     p.add_argument("--keep-empty", action="store_true",
                    help="Keep empty rows and columns")
+    p.add_argument("--to-pdf", action="store_true",
+                   help="Convert documents INTO PDF via headless LibreOffice "
+                        "(.docx/.xlsx/.pptx/.odt/.rtf/.txt/.html and more), "
+                        "instead of reading a PDF. Works with -d for a folder")
     p.add_argument("--gui", action="store_true",
                    help="Print the command that launches the web UI, and exit "
                         "(the UI lives in app.py; this does not start it)")
@@ -2064,7 +2292,9 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.check_deps:
-        print_dependency_status()
+        # Config is read first so a configured libreoffice_path is honoured by
+        # the status report rather than contradicted by it.
+        print_dependency_status(load_config(args.config))
         return 0
 
     if args.gui:
@@ -2085,6 +2315,42 @@ def main() -> int:
     if args.keep_empty:
         cfg["remove_empty_rows"] = False
         cfg["remove_empty_cols"] = False
+
+    # ──────────────── Document → PDF ────────────────────────────────────────
+    if args.to_pdf:
+        converter = DocumentToPDFConverter(cfg, logger)
+        out_dir = args.output or cfg.get("output_dir", "output")
+
+        if not converter.available():
+            _print(
+                "[red]LibreOffice not found.[/red] --to-pdf needs it. Install "
+                "LibreOffice and put 'soffice' on PATH, or set "
+                "'libreoffice_path' in config.json."
+                if RICH_AVAILABLE else
+                "LibreOffice not found. --to-pdf needs it. Install LibreOffice "
+                "and put 'soffice' on PATH, or set 'libreoffice_path' in config.json."
+            )
+            return 1
+
+        if args.dir:
+            results = converter.convert_folder(args.dir, out_dir)
+        elif args.input:
+            results = [converter.convert(args.input, out_dir)]
+        else:
+            _print("--to-pdf needs an input file, or -d for a folder.")
+            return 1
+
+        if not results:
+            return 1
+
+        ok = sum(1 for r in results if r["success"])
+        fail = len(results) - ok
+        _print(f"\nConverted {ok} of {len(results)} to PDF in: {out_dir}")
+        for r in results:
+            if not r["success"]:
+                msg = f"Failed: {os.path.basename(r['input'])} - {r['error']}"
+                _print(f"[red]{msg}[/red]" if RICH_AVAILABLE else msg)
+        return 0 if fail == 0 else 1
 
     # ──────────────── Batch mode ────────────────────────────────────────────────────────────
     if args.dir:

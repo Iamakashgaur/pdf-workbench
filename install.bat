@@ -103,6 +103,21 @@ if errorlevel 1 (
 )
 
 echo.
+echo -- LibreOffice  (optional - only for --to-pdf) --
+where soffice >nul 2>&1
+if not errorlevel 1 (
+    echo [OK] LibreOffice found
+) else (
+    if exist "%ProgramFiles%\LibreOffice\program\soffice.exe" (
+        echo [OK] LibreOffice found
+    ) else (
+        echo [INFO] LibreOffice not found - --to-pdf will be unavailable.
+        echo        Only needed to convert documents INTO PDF.
+        echo        https://www.libreoffice.org/download/download-libreoffice/
+    )
+)
+
+echo.
 echo [4/5] Verifying script...
 call :RunPy "%ROOT%pdf_to_excel.py" --check-deps
 if errorlevel 1 goto :ScriptFailed

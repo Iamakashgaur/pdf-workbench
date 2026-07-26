@@ -11,6 +11,7 @@ import json
 import argparse
 import logging
 import unittest
+import unittest.mock
 import tempfile
 import shutil
 from pathlib import Path
@@ -448,6 +449,154 @@ class TestOptionalDependencyHandling(unittest.TestCase):
             )
         finally:
             module.TESSERACT_AVAILABLE = original
+
+
+class TestDocumentToPDF(unittest.TestCase):
+    """X -> PDF via headless LibreOffice.
+
+    LibreOffice is absent from CI and from most dev machines, so the tests that
+    matter here are the ones that do not need it: that a missing binary is
+    reported rather than crashed on, that unsupported input is rejected up
+    front, and that the command carries the private-profile flag without which
+    soffice silently writes nothing. The one test that needs a real
+    installation skips itself.
+    """
+
+    def setUp(self):
+        self.tmp = make_test_dir()
+        self.out = os.path.join(self.tmp, "pdfs")
+        self.logger = setup_logging(self.tmp)
+        self.docx = os.path.join(self.tmp, "report.docx")
+        with open(self.docx, "wb") as fh:      # contents never read by these tests
+            fh.write(b"not a real docx")
+
+    def tearDown(self):
+        close_logger(self.logger)
+        shutil.rmtree(self.tmp)
+
+    def _conv(self, **cfg):
+        from pdf_to_excel import DocumentToPDFConverter
+        base = load_config()
+        base.update(cfg)
+        return DocumentToPDFConverter(base, self.logger)
+
+    # ── locating the binary ──────────────────────────────────────────────
+    def test_missing_libreoffice_is_reported_not_raised(self):
+        conv = self._conv(libreoffice_path=None)
+        conv._binary = None                    # force "not found"
+        r = conv.convert(self.docx, self.out)
+        self.assertFalse(r["success"])
+        self.assertIn("LibreOffice not found", r["error"])
+
+    def test_configured_path_is_used_when_it_exists(self):
+        fake = os.path.join(self.tmp, "soffice.exe")
+        open(fake, "w").close()
+        self.assertEqual(self._conv(libreoffice_path=fake).binary(), fake)
+
+    def test_wrong_configured_path_falls_back_and_warns(self):
+        # A bad path in config is a mistake worth hearing about, not something
+        # to paper over by quietly searching elsewhere.
+        missing = os.path.join(self.tmp, "nope", "soffice")
+        conv = self._conv(libreoffice_path=missing)
+        with self.assertLogs(self.logger, level="WARNING") as caught:
+            conv.binary()
+        self.assertTrue(any("libreoffice_path" in m for m in caught.output))
+
+    # ── input validation, before anything is launched ────────────────────
+    def test_unsupported_extension_is_rejected_up_front(self):
+        odd = os.path.join(self.tmp, "archive.zip")
+        open(odd, "w").close()
+        r = self._conv().convert(odd, self.out)
+        self.assertFalse(r["success"])
+        self.assertIn("Unsupported format", r["error"])
+
+    def test_pdf_input_is_rejected_clearly(self):
+        pdf = os.path.join(self.tmp, "already.pdf")
+        open(pdf, "w").close()
+        r = self._conv().convert(pdf, self.out)
+        self.assertFalse(r["success"])
+        self.assertEqual(r["error"], "Already a PDF")
+
+    def test_missing_file_is_reported(self):
+        r = self._conv().convert(os.path.join(self.tmp, "ghost.docx"), self.out)
+        self.assertFalse(r["success"])
+        self.assertEqual(r["error"], "File not found")
+
+    # ── the command itself ───────────────────────────────────────────────
+    def test_command_isolates_the_user_profile(self):
+        # Without -env:UserInstallation a second soffice hands its job to the
+        # running instance and exits 0 having written nothing - a silent
+        # failure with a success exit code.
+        from pdf_to_excel import DocumentToPDFConverter
+        cmd = DocumentToPDFConverter._command(
+            "soffice", "/in/a.docx", "/out", os.path.join(self.tmp, "profile")
+        )
+        self.assertTrue(any(c.startswith("-env:UserInstallation=file:") for c in cmd))
+        self.assertIn("--headless", cmd)
+        self.assertEqual(cmd[cmd.index("--convert-to") + 1], "pdf")
+        self.assertEqual(cmd[cmd.index("--outdir") + 1], "/out")
+        self.assertEqual(cmd[-1], "/in/a.docx")
+
+    # ── result handling, with soffice stubbed ────────────────────────────
+    def test_success_requires_the_pdf_to_actually_exist(self):
+        # soffice returns 0 in cases where it wrote nothing, so the output file
+        # is what decides success - not the exit code.
+        import subprocess as sp
+        from pdf_to_excel import DocumentToPDFConverter
+
+        conv = self._conv()
+        conv._binary = "soffice"
+        completed = sp.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with unittest.mock.patch("pdf_to_excel.subprocess.run", return_value=completed):
+            r = conv.convert(self.docx, self.out)
+        self.assertFalse(r["success"], "exit 0 with no output file must not pass")
+        self.assertIn("produced no PDF", r["error"])
+
+    def test_success_when_the_pdf_is_written(self):
+        import subprocess as sp
+        conv = self._conv()
+        conv._binary = "soffice"
+        expected = os.path.join(self.out, "report.pdf")
+
+        def fake_run(cmd, **kw):
+            os.makedirs(self.out, exist_ok=True)
+            with open(expected, "wb") as fh:
+                fh.write(b"%PDF-1.4\n")
+            return sp.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with unittest.mock.patch("pdf_to_excel.subprocess.run", side_effect=fake_run):
+            r = conv.convert(self.docx, self.out)
+        self.assertTrue(r["success"], r["error"])
+        self.assertEqual(r["output"], expected)
+        self.assertTrue(os.path.isfile(expected))
+
+    def test_timeout_is_reported(self):
+        import subprocess as sp
+        conv = self._conv()
+        conv._binary = "soffice"
+        with unittest.mock.patch(
+            "pdf_to_excel.subprocess.run",
+            side_effect=sp.TimeoutExpired(cmd="soffice", timeout=5),
+        ):
+            r = conv.convert(self.docx, self.out, timeout=5)
+        self.assertFalse(r["success"])
+        self.assertIn("timed out", r["error"])
+
+    # ── live check, skipped unless LibreOffice is actually installed ─────
+    def test_real_conversion_if_libreoffice_is_installed(self):
+        from pdf_to_excel import libreoffice_present
+        if not libreoffice_present(load_config()):
+            self.skipTest("LibreOffice not installed on this machine")
+
+        src = os.path.join(self.tmp, "sample.txt")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write("Supplier order report\nline one\nline two\n")
+
+        r = self._conv().convert(src, self.out)
+        self.assertTrue(r["success"], r["error"])
+        self.assertTrue(os.path.isfile(r["output"]))
+        with open(r["output"], "rb") as fh:
+            self.assertEqual(fh.read(5), b"%PDF-")
 
 
 class TestLogging(unittest.TestCase):
