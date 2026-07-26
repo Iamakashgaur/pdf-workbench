@@ -56,8 +56,10 @@ for rather than approximately captured.
 - Handles digital, scanned and mixed PDFs; page type is detected automatically.
 - Three table engines tried in order; two are optional and often absent.
 - OCR for scanned pages requires Tesseract, which may not be installed.
-- `--to-pdf` converts office documents into PDF via headless LibreOffice, which
-  is likewise optional system software. CLI only; the web UI does not expose it.
+- Office documents convert into PDF via headless LibreOffice, which is likewise
+  optional system software. Available from the CLI (`--to-pdf`) and from the web
+  UI, where the uploaded file selects the flow rather than a mode control: a PDF
+  is extracted, anything else is converted.
 - Output: a formatted `.xlsx`, or one `.csv` per extracted dataset — including
   the order report, which the CSV path reads through the same cascade as Excel.
   Batch runs also produce a run-level summary workbook.

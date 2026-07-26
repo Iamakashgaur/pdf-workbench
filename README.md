@@ -107,9 +107,11 @@ Stated plainly, because a tool that oversells itself is the problem this one exi
 - Scanned pages need Tesseract installed. Without it they are skipped and reported,
   never silently dropped.
 - `java_path` in `config.json` is currently unused; put Java on `PATH` for tabula.
-- `--to-pdf` converts documents *into* PDF and stops there; it does not chain
-  into extraction, and there is no PDF → Word/PowerPoint direction. It needs
-  LibreOffice installed, and is available from the CLI only — not the web UI.
+- Document → PDF conversion stops there; it does not chain into extraction, and
+  there is no PDF → Word/PowerPoint direction. It needs LibreOffice installed.
+- A spreadsheet converted to PDF is rendered at its stored column widths, so
+  wide cells are clipped — which is why an `.xlsx` round-tripped through PDF
+  does not come back as the original table.
 
 ---
 
@@ -251,6 +253,15 @@ LibreOffice is launched, rather than failing obscurely inside it.
 > Conversion is only reported as successful if the PDF is actually on disk.
 > LibreOffice exits `0` in cases where it wrote nothing at all, so the exit code
 > is not trusted on its own.
+
+The web UI does the same thing, and **there is no mode to switch**: drop a PDF and
+it extracts, drop a document and it converts. Which one applies is a fact already
+on disk, so the interface reads it rather than asking.
+
+![The web UI converting a Word document into PDF](docs/demo-topdf.png)
+
+<sub>If LibreOffice is not installed, the UI says so on the document panel — before
+you click anything — and explains how to fix it, rather than failing after the fact.</sub>
 
 ### GUI (Streamlit)
 

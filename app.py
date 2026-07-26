@@ -14,6 +14,9 @@ OWN-WORLD: Cool-grey neutrals on light ground, 1px hairlines instead of
 STORY: The operator drops an invoice, sees what the document is, converts, then
   reads a reconciliation against the invoice's own stated total before
   downloading — so downloading confirms something already visibly true.
+  Dropping a non-PDF instead routes to document→PDF conversion. The file
+  decides; there is no mode switch, because which flow applies is a fact
+  already on disk rather than a question worth asking.
 FIRST VIEWPORT: Wordmark over a hairline rule; page title left; one bordered
   dropzone panel filling the working column with format guidance beneath. No
   hero, no cards, no metrics until there is a document to describe.
@@ -34,10 +37,18 @@ import pandas as pd
 from openpyxl import load_workbook
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pathlib import Path  # noqa: E402
 from pdf_to_excel import (  # noqa: E402
     load_config, setup_logging, PDFProcessor,
     PDFClassifier, export_to_csv,
+    DocumentToPDFConverter, DOC_TO_PDF_EXTENSIONS, libreoffice_present,
 )
+
+# The uploader decides the flow. Dropping a PDF extracts from it; dropping a
+# document converts it into one. No mode switch: the file says which it is, so
+# asking the operator to declare it first would be chrome over a fact already
+# on disk (product principle 4, the document is the authority).
+UPLOAD_TYPES = ["pdf"] + sorted(e.lstrip(".") for e in DOC_TO_PDF_EXTENSIONS)
 
 st.set_page_config(
     page_title="PDF to Excel Converter",
@@ -479,13 +490,17 @@ result against the invoice's own stated total, so you can see the conversion is
 complete before you download it.</p>
 """, unsafe_allow_html=True)
 
-uploaded = st.file_uploader("Report PDF", type=["pdf"], label_visibility="collapsed")
+uploaded = st.file_uploader("Report PDF", type=UPLOAD_TYPES,
+                            label_visibility="collapsed")
 
 if not uploaded:
     st.markdown("""
     <p class="app-help">Accepts digital, scanned and mixed PDFs — the type is detected
     per page, so there is nothing to configure for a normal report. Scanned pages need
     Tesseract installed; without it they are skipped and reported rather than dropped.</p>
+    <p class="app-help">Drop a Word, Excel, PowerPoint or HTML document instead and it
+    is converted <em>into</em> PDF. The file decides which happens — there is nothing
+    to switch.</p>
     """, unsafe_allow_html=True)
     st.stop()
 
@@ -493,9 +508,103 @@ if not uploaded:
 # DOCUMENT
 # ─────────────────────────────────────────────────────────────────────────────
 tmp_dir = reset_tmp()
-src_path = os.path.join(tmp_dir, "source.pdf")
+# Written with its real suffix: LibreOffice picks its import filter from the
+# extension, so a .docx saved as "source.pdf" would be refused.
+suffix = Path(uploaded.name).suffix.lower()
+src_path = os.path.join(tmp_dir, "source" + suffix)
 with open(src_path, "wb") as f:
     f.write(uploaded.getvalue())
+size_kb = len(uploaded.getvalue()) / 1024
+stem = os.path.splitext(uploaded.name)[0]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DOCUMENT → PDF   (a non-PDF was dropped)
+# ─────────────────────────────────────────────────────────────────────────────
+if suffix != ".pdf":
+    engine_ready = libreoffice_present(cfg)
+
+    st.markdown(f"""
+    <h2 class="app-h2">Document</h2>
+    <div class="app-metrics">
+      <div><p class="app-label">Format</p>
+        <div class="app-metric-v">{esc(suffix.lstrip('.').upper())}</div></div>
+      <div><p class="app-label">Size</p>
+        <div class="app-metric-v">{size_kb:,.0f} KB</div></div>
+      <div><p class="app-label">Converts to</p>
+        <div class="app-metric-v">PDF</div></div>
+      <div><p class="app-label">Engine</p>
+        <div class="app-metric-v">{'Ready' if engine_ready else 'Missing'}</div></div>
+    </div>
+    <p class="app-help mono">{esc(uploaded.name)}</p>
+    """, unsafe_allow_html=True)
+
+    # Explained in place, before the operator commits to an action that cannot
+    # work. Deliberately not amber: amber means "rows excluded from the output"
+    # and nothing else on either surface (DESIGN.md rule 1).
+    if not engine_ready:
+        st.markdown("""
+        <div class="app-panel">
+          <p class="app-label">LibreOffice required</p>
+          <p class="app-help">Converting a document into PDF is done by a headless
+          LibreOffice. It is separate software this tool does not bundle, and it is
+          not installed here.</p>
+          <p class="app-help">Install it, then reload this page — there is nothing
+          else to configure. If it is installed somewhere unusual, set
+          <span class="mono">libreoffice_path</span> in
+          <span class="mono">config.json</span>.</p>
+          <p class="app-help">Reading PDFs is unaffected and needs none of this.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.stop()
+
+    if not st.button("Convert to PDF", type="primary"):
+        st.stop()
+
+    doc_out = os.path.join(tmp_dir, "out")
+    os.makedirs(doc_out, exist_ok=True)
+    with st.spinner("Converting with LibreOffice…"):
+        conv = DocumentToPDFConverter(cfg, logger).convert(
+            src_path, doc_out, output_name=stem)
+
+    if not conv["success"]:
+        st.markdown(f"""
+        <h2 class="app-h2">Result</h2>
+        <div class="notice fail"><span class="t">Conversion failed</span>
+        {esc(conv['error'])}
+        <span class="b">The full error is in the log under
+        <span class="mono">{esc(cfg.get('log_dir', 'logs'))}/</span>.</span></div>
+        """, unsafe_allow_html=True)
+        st.stop()
+
+    try:
+        import pdfplumber
+        with pdfplumber.open(conv["output"]) as _pdf:
+            page_count = len(_pdf.pages)
+    except Exception:
+        page_count = 0
+
+    out_kb = os.path.getsize(conv["output"]) / 1024
+    st.markdown(f"""
+    <h2 class="app-h2">Result</h2>
+    <div class="app-panel">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;">
+        <span class="pill ok"><span class="dot"></span>Converted</span>
+        <span class="app-help mono" style="margin:0">{conv['duration_sec']:.1f}s</span>
+      </div>
+      <div class="verdict ok">
+        <span class="verdict-fig">{page_count or '—'}</span>
+        <span class="verdict-cap">page(s) written · {out_kb:,.0f} KB</span>
+      </div>
+      <p class="app-help" style="margin:0">The PDF was checked onto disk before this
+      was shown — LibreOffice can exit successfully having written nothing, so the
+      file itself is what confirms the conversion.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with open(conv["output"], "rb") as fh:
+        st.download_button(f"Download {stem}.pdf", fh.read(),
+                           f"{stem}.pdf", "application/pdf")
+    st.stop()
 
 try:
     info = PDFClassifier(logger).classify(src_path)
@@ -503,7 +612,6 @@ except Exception:
     info = {"page_count": 0, "type": "unknown", "text_pages": [], "scanned_pages": []}
 
 stated = stated_totals(src_path)
-size_kb = len(uploaded.getvalue()) / 1024
 
 st.markdown(f"""
 <h2 class="app-h2">Document</h2>
@@ -569,7 +677,6 @@ cfg.update({
 out_dir = os.path.join(tmp_dir, "out")
 os.makedirs(out_dir, exist_ok=True)
 start = time.time()
-stem = os.path.splitext(uploaded.name)[0]
 
 with st.spinner("Reading the document…"):
     if "CSV" in output_fmt:
