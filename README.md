@@ -69,6 +69,8 @@ while the data beneath is left-aligned, so the midpoint between two header label
 header anchors and splits at the **widest empty vertical strip in the printed data** —
 calibrating column boundaries from the document itself rather than hard-coded coordinates.
 
+![Column boundaries calibrated from the widest empty strip rather than the midpoint between header labels](docs/slides/column-calibration.png)
+
 Every case in the table above then stops being a special case:
 
 - A wrapped cell continues **under its own column**, so it merges into the right field.

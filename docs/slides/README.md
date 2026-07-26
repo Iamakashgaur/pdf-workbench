@@ -9,6 +9,12 @@ is what it is — written for a general audience rather than a code reader.
 | [`2-insight.png`](2-insight.png) | Why column boundaries are calibrated from the widest empty strip instead of the midpoint between header labels |
 | [`3-result.png`](3-result.png) | The reconciliation panel, and what happens to a row that cannot be read |
 
+Plus one that is not part of the carousel:
+
+| | |
+|---|---|
+| [`column-calibration.png`](column-calibration.png) | Slide 2's diagram without the carousel framing, landscape — embedded in the project README where the calibration is explained |
+
 ## What is real and what is drawn
 
 Slide 3 embeds [`panel.png`](panel.png), a **real screenshot** of the running app
