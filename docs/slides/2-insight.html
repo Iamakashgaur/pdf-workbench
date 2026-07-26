@@ -1,0 +1,104 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  :root{
+    --bg:#fbfbfa; --surface:#fff; --surface-2:#f6f6f5;
+    --border:#e6e6e3; --border-strong:#d4d4d0;
+    --text:#18181b; --text-2:#52525b; --text-3:#6b6b74;
+    --ok:#15803d; --ok-bg:#f0f8f2; --ok-br:#c9e4d2;
+    --fail:#b91c1c; --fail-bg:#fdf2f2; --fail-br:#f2cccc;
+    --font:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+    --mono:"Cascadia Mono",Consolas,ui-monospace,monospace;
+  }
+  *{box-sizing:border-box; margin:0;}
+  body{
+    width:1200px; height:1200px; background:var(--bg); color:var(--text);
+    font-family:var(--font); padding:70px 72px; display:flex; flex-direction:column;
+    -webkit-font-smoothing:antialiased;
+  }
+  .label{
+    font-size:17px; font-weight:600; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--text-3); margin-bottom:20px;
+  }
+  h1{font-size:52px; line-height:1.12; letter-spacing:-.022em; font-weight:600;}
+  .sub{font-size:23px; line-height:1.5; color:var(--text-2); margin-top:20px; max-width:52ch;}
+
+  .stage{
+    position:relative; margin-top:48px; height:400px;
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:26px 0 0 0; overflow:hidden;
+  }
+  .row{position:relative; height:46px; font-family:var(--mono); font-size:19px;}
+  .row span{position:absolute; white-space:nowrap;}
+  .hdr span{font-weight:700; color:var(--text);}
+  .data span{color:var(--text-2);}
+  .rule{position:absolute; left:24px; right:24px; height:1px; background:var(--border);}
+
+  .cut{position:absolute; top:14px; bottom:66px; width:0; border-left:3px dashed var(--fail);}
+  .keep{position:absolute; top:14px; bottom:66px; width:0; border-left:3px solid var(--ok);}
+  /* Each tag hangs off its own side of its line so the two cannot collide. */
+  .tag{
+    position:absolute; font-family:var(--font); font-size:17px; font-weight:650;
+    padding:6px 12px; border-radius:6px; white-space:nowrap;
+  }
+  .tag.bad{transform:translateX(-100%);}
+  .tag.bad{background:var(--fail-bg); color:var(--fail); border:1px solid var(--fail-br);}
+  .tag.good{background:var(--ok-bg); color:var(--ok); border:1px solid var(--ok-br);}
+
+  .legend{margin-top:52px; display:flex; flex-direction:column; gap:26px;}
+  .leg{display:flex; align-items:flex-start; gap:16px; font-size:24px; line-height:1.45;}
+  .chip{
+    flex:none; margin-top:3px; width:26px; height:0; border-top:4px solid;
+  }
+  .chip.bad{border-color:var(--fail); border-top-style:dashed;}
+  .chip.good{border-color:var(--ok);}
+  .leg b{font-weight:650;}
+  .leg .muted{color:var(--text-2);}
+  .foot{
+    margin-top:auto; padding-top:26px; border-top:1px solid var(--border);
+    font-size:19px; color:var(--text-3); font-family:var(--mono);
+  }
+</style>
+<div class="label">The insight</div>
+<h1>Read the geometry,<br>not the text.</h1>
+<p class="sub">Every word carries its position on the page. A value's <b>column</b> is
+a fact the file records — its shape is only a guess.</p>
+
+<div class="stage">
+  <!-- naive split: midway between the two header labels -->
+  <div class="cut" style="left:450px"></div>
+  <div class="tag bad" style="left:438px; bottom:34px">✕ midpoint between headers</div>
+
+  <!-- calibrated split: centre of the widest empty strip in the data -->
+  <div class="keep" style="left:519px"></div>
+  <div class="tag good" style="left:531px; bottom:34px">✓ widest empty strip in the data</div>
+
+  <div class="row hdr">
+    <span style="left:40px">S. No.</span>
+    <span style="left:225px">Customer Name</span>
+    <span style="left:578px">Item</span>
+  </div>
+  <div class="rule" style="top:66px"></div>
+
+  <div class="row data" style="margin-top:22px">
+    <span style="left:40px">1</span>
+    <span style="left:170px">Alexandra Featherstone-Hall</span>
+    <span style="left:560px">2.14 Round J VS1</span>
+  </div>
+  <div class="row data">
+    <span style="left:40px">2</span>
+    <span style="left:170px">Alex Morgan</span>
+    <span style="left:560px">3.05 Cushion G SI1</span>
+  </div>
+</div>
+
+<div class="legend">
+  <div class="leg"><span class="chip bad"></span>
+    <span><b>Headers are centred, data is left-aligned.</b>
+    <span class="muted">So the midpoint between two labels cuts straight through a long value.</span></span></div>
+  <div class="leg"><span class="chip good"></span>
+    <span><b>The gap in the printed data is the real edge.</b>
+    <span class="muted">Calibrated per page, from the document itself.</span></span></div>
+</div>
+
+<div class="foot">2 / 3</div>

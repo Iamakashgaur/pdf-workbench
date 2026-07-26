@@ -1,0 +1,79 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  :root{
+    --bg:#fbfbfa; --surface:#fff; --surface-2:#f6f6f5;
+    --border:#e6e6e3; --border-strong:#d4d4d0;
+    --text:#18181b; --text-2:#52525b; --text-3:#6b6b74;
+    --fail:#b91c1c; --fail-bg:#fdf2f2; --fail-br:#f2cccc;
+    --font:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+    --mono:"Cascadia Mono",Consolas,ui-monospace,monospace;
+  }
+  *{box-sizing:border-box; margin:0;}
+  body{
+    width:1200px; height:1200px; background:var(--bg); color:var(--text);
+    font-family:var(--font); padding:70px 72px; display:flex; flex-direction:column;
+    -webkit-font-smoothing:antialiased;
+  }
+  .label{
+    font-size:17px; font-weight:600; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--text-3); margin-bottom:20px;
+  }
+  h1{font-size:52px; line-height:1.12; letter-spacing:-.022em; font-weight:600;}
+  .sub{font-size:24px; line-height:1.5; color:var(--text-2); margin-top:22px; max-width:44ch;}
+  .flat{
+    margin-top:56px; background:var(--surface); border:1px solid var(--border);
+    border-radius:12px; padding:24px 26px;
+  }
+  .flat .cap{
+    font-size:15px; font-weight:600; letter-spacing:.07em; text-transform:uppercase;
+    color:var(--text-3); margin-bottom:14px;
+  }
+  .flat code{
+    font-family:var(--mono); font-size:21px; line-height:1.75; color:var(--text);
+    display:block; white-space:pre-wrap; word-break:break-word;
+  }
+  table{border-collapse:collapse; width:100%; margin-top:54px;}
+  td{
+    padding:29px 22px; border-bottom:1px solid var(--border);
+    font-size:24px; line-height:1.4; vertical-align:top;
+  }
+  tr:last-child td{border-bottom:0;}
+  td.what{width:47%; color:var(--text); font-weight:550;}
+  td.breaks{color:var(--text-2);}
+  .x{color:var(--fail); font-weight:700; margin-right:12px;}
+  .foot{
+    margin-top:auto; padding-top:30px; border-top:1px solid var(--border);
+    font-size:19px; color:var(--text-3); font-family:var(--mono);
+  }
+</style>
+<div class="label">The problem</div>
+<h1>These reports have no<br>table to find.</h1>
+<p class="sub">No ruling lines, so grid-detection engines return nothing.
+What's left is flat text — and every real case breaks the pattern.</p>
+
+<div class="flat">
+  <div class="cap">What a converter actually sees</div>
+  <code>1 Alex Morgan 2.14 Round J VS1 Diamond IGI A1B2C3D4 $413.25 Guild and Facet 27 Apr 2026</code>
+</div>
+
+<table>
+  <tr>
+    <td class="what"><span class="x">✕</span>A description wraps to the next line</td>
+    <td class="breaks">The continuation looks like a new row</td>
+  </tr>
+  <tr>
+    <td class="what"><span class="x">✕</span>A setting has no certificate at all</td>
+    <td class="breaks">The field the pattern expects is simply absent</td>
+  </tr>
+  <tr>
+    <td class="what"><span class="x">✕</span>A product type that isn't “Diamond”</td>
+    <td class="breaks">The pattern has never heard of it</td>
+  </tr>
+  <tr>
+    <td class="what"><span class="x">✕</span>A totals line: <span style="font-family:var(--mono)">95 Items - $94222.52</span></td>
+    <td class="breaks">Starts with digits, reads as a data row</td>
+  </tr>
+</table>
+
+<div class="foot">1 / 3</div>

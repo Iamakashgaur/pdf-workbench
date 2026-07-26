@@ -1,0 +1,67 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  :root{
+    --bg:#fbfbfa; --surface:#fff; --border:#e6e6e3;
+    --text:#18181b; --text-2:#52525b; --text-3:#6b6b74;
+    --ok:#15803d; --held:#b45309;
+    --font:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+    --mono:"Cascadia Mono",Consolas,ui-monospace,monospace;
+  }
+  *{box-sizing:border-box; margin:0;}
+  body{
+    width:1200px; height:1200px; background:var(--bg); color:var(--text);
+    font-family:var(--font); padding:70px 72px; display:flex; flex-direction:column;
+    -webkit-font-smoothing:antialiased;
+  }
+  .label{
+    font-size:17px; font-weight:600; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--text-3); margin-bottom:20px;
+  }
+  h1{font-size:52px; line-height:1.12; letter-spacing:-.022em; font-weight:600;}
+  .sub{font-size:23px; line-height:1.5; color:var(--text-2); margin-top:20px; max-width:54ch;}
+  .shot{
+    margin-top:44px; border:1px solid var(--border); border-radius:12px;
+    overflow:hidden; background:var(--surface);
+  }
+  .shot img{display:block; width:100%;}
+  .shot .cap{
+    font-family:var(--mono); font-size:15px; color:var(--text-3);
+    padding:12px 18px; border-top:1px solid var(--border); background:#f6f6f5;
+  }
+  .points{margin-top:46px; display:flex; flex-direction:column; gap:24px;}
+  .pt{display:flex; gap:16px; font-size:24px; line-height:1.45;}
+  .pt .n{
+    flex:none; width:34px; height:34px; border-radius:50%; background:var(--text);
+    color:#fff; font-size:17px; font-weight:700; display:grid; place-items:center;
+    margin-top:2px;
+  }
+  .pt b{font-weight:650;}
+  .pt .muted{color:var(--text-2);}
+  .foot{
+    margin-top:auto; padding-top:26px; border-top:1px solid var(--border);
+    display:flex; justify-content:space-between; align-items:baseline;
+    font-family:var(--mono); font-size:19px; color:var(--text-3);
+  }
+</style>
+<div class="label">The part that matters</div>
+<h1>Never fail silently.</h1>
+<p class="sub">A converter that drops 4 rows out of 95 produces a file that looks
+exactly like a correct one. For financial records that's worse than no tool at
+all — because it gets trusted.</p>
+
+<div class="shot">
+  <img src="panel.png" alt="Reconciliation panel showing $0.00 difference">
+  <div class="cap">real output &middot; synthetic invoice</div>
+</div>
+
+<div class="points">
+  <div class="pt"><span class="n">1</span>
+    <span><b>It reconciles against the invoice's own stated total.</b>
+    <span class="muted">Extracted vs. stated, before you download.</span></span></div>
+  <div class="pt"><span class="n">2</span>
+    <span><b>Every excluded row is reported in four places.</b>
+    <span class="muted">Console, log, workbook metadata, batch summary.</span></span></div>
+</div>
+
+<div class="foot"><span>github.com/Iamakashgaur/pdf-workbench</span><span>3 / 3</span></div>
