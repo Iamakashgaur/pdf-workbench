@@ -30,6 +30,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # LibreOffice is needed only by --to-pdf. Installed on the Linux legs so
+      # the live conversion test runs on every push, without paying the much
+      # slower Windows install on all four matrix jobs. The Windows legs keep
+      # skipping that one test, which is exactly what a machine without
+      # LibreOffice should do - and is itself worth having covered.
+      - name: Install LibreOffice (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libreoffice-writer libreoffice-calc
+          soffice --version
+
       # Camelot and Tabula are optional fallback engines that need system
       # software (Ghostscript / Java); the suite is designed to run without
       # them, and --check-deps confirms which engines are active on the runner.

@@ -620,19 +620,53 @@ class TestDocumentToPDF(unittest.TestCase):
 
     # ── live check, skipped unless LibreOffice is actually installed ─────
     def test_real_conversion_if_libreoffice_is_installed(self):
+        """Drive a real soffice, and check the PDF is readable - not just present.
+
+        A file of the right name proves very little: soffice can emit an empty
+        or unopenable document. This asserts the output parses and the source
+        text survived the round trip.
+        """
         from pdf_to_excel import libreoffice_present
         if not libreoffice_present(load_config()):
             self.skipTest("LibreOffice not installed on this machine")
 
-        src = os.path.join(self.tmp, "sample.txt")
-        with open(src, "w", encoding="utf-8") as fh:
-            fh.write("Supplier order report\nline one\nline two\n")
+        import pdfplumber
 
-        r = self._conv().convert(src, self.out)
-        self.assertTrue(r["success"], r["error"])
-        self.assertTrue(os.path.isfile(r["output"]))
-        with open(r["output"], "rb") as fh:
-            self.assertEqual(fh.read(5), b"%PDF-")
+        # A text document (Writer) and a spreadsheet (Calc): two different
+        # LibreOffice filters, so this covers more than one import path.
+        txt = os.path.join(self.tmp, "sample.txt")
+        with open(txt, "w", encoding="utf-8") as fh:
+            fh.write("Supplier order report\nMARKER-TXT\n")
+
+        from openpyxl import Workbook
+        wb = Workbook()
+        wb.active.append(["S. No.", "Customer Name", "Amount"])
+        wb.active.append([1, "MARKER-XLSX", "413.25"])
+        # LibreOffice renders a spreadsheet at its stored column widths and
+        # clips anything wider - at the default width "MARKER-XLSX" comes out
+        # as "MARKER-XL". Widening the column is what a real sheet would carry,
+        # and keeps this test measuring conversion rather than truncation.
+        wb.active.column_dimensions["B"].width = 24
+        xlsx = os.path.join(self.tmp, "sheet.xlsx")
+        wb.save(xlsx)
+
+        conv = self._conv()
+        for src, marker in ((txt, "MARKER-TXT"), (xlsx, "MARKER-XLSX")):
+            with self.subTest(source=os.path.basename(src)):
+                r = conv.convert(src, self.out)
+                self.assertTrue(r["success"], r["error"])
+                self.assertTrue(os.path.isfile(r["output"]))
+
+                with open(r["output"], "rb") as fh:
+                    self.assertEqual(fh.read(5), b"%PDF-")
+
+                with pdfplumber.open(r["output"]) as pdf:
+                    self.assertGreaterEqual(len(pdf.pages), 1)
+                    text = " ".join(
+                        (p.extract_text() or "") for p in pdf.pages
+                    )
+                self.assertIn(marker, text,
+                              "source text did not survive into the PDF")
 
 
 class TestLogging(unittest.TestCase):
