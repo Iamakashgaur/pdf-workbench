@@ -1,6 +1,6 @@
-# PDF to Excel Converter
+# PDF Workbench
 
-[![CI](https://github.com/Iamakashgaur/PDF-to-Excel-Converter/actions/workflows/ci.yml/badge.svg)](https://github.com/Iamakashgaur/PDF-to-Excel-Converter/actions/workflows/ci.yml)
+[![CI](https://github.com/Iamakashgaur/pdf-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/Iamakashgaur/pdf-workbench/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.13-blue)](https://www.python.org/)
 [![Tests](https://img.shields.io/badge/tests-99%20passing-brightgreen)](test_pdf_to_excel.py)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)

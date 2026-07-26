@@ -2,7 +2,7 @@
 setlocal
 
 echo ============================================================
-echo  PDF to Excel Converter - One Click Setup
+echo  PDF Workbench - One Click Setup
 echo ============================================================
 echo.
 

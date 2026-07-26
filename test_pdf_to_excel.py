@@ -1996,7 +1996,7 @@ class TestReportColumnParser(unittest.TestCase):
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("PDF to Excel Converter – Test Suite")
+    print("PDF Workbench – Test Suite")
     print("=" * 60)
 
     if not REPORTLAB_AVAILABLE:

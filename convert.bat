@@ -2,7 +2,7 @@
 setlocal
 
 echo ============================================================
-echo  PDF to Excel Converter - Web App
+echo  PDF Workbench - Web App
 echo ============================================================
 echo.
 

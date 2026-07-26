@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PDF to Excel Converter
+PDF Workbench
 Handles scanned, native, and mixed PDFs via OCR + layout analysis.
 """
 

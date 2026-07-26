@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PDF to Excel Converter — web interface.
+PDF Workbench — web interface.
 Run: streamlit run app.py   (or double-click convert.bat)
 
 DIRECTION CONTRACT
@@ -52,7 +52,7 @@ from pdf_to_excel import (  # noqa: E402
 UPLOAD_TYPES = ["pdf"] + sorted(e.lstrip(".") for e in DOC_TO_PDF_EXTENSIONS)
 
 st.set_page_config(
-    page_title="PDF to Excel Converter",
+    page_title="PDF Workbench",
     page_icon="◆",
     layout="centered",
 )
@@ -482,10 +482,10 @@ logger = get_logger(cfg.get("log_dir", "logs"))
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="app-mast">
-  <div class="app-brand"><span class="mark">◆</span><span class="name">PDF to Excel</span></div>
+  <div class="app-brand"><span class="mark">◆</span><span class="name">PDF Workbench</span></div>
   <div class="app-env">Converter</div>
 </div>
-<h1 class="app-h1">PDF to Excel</h1>
+<h1 class="app-h1">PDF Workbench</h1>
 <p class="app-sub">Extracts every line item from a supplier PDF and reconciles the
 result against the invoice's own stated total, so you can see the conversion is
 complete before you download it. Drop a Word, Excel or PowerPoint document
