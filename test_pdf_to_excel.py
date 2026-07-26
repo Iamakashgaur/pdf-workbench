@@ -312,6 +312,10 @@ PARTS_INVOICE_LAYOUT = {
     "structural_columns": ["Total"],
     "required": ["Description"],
     "patterns": {"Total": r"^\$?\d[\d,]*\.\d{2}$", "Qty": r"^\d+$"},
+    # "Unit Price" is printed without a currency symbol, so it is a plain
+    # two-decimal number; "Total" carries one, so it is money.
+    "formats": {"Line": "integer", "Qty": "integer",
+                "Unit Price": "number", "Total": "money"},
 }
 
 PARTS_INVOICE_COLUMNS = ["Line", "Description", "Qty", "Unit Price", "Total"]
@@ -1497,6 +1501,49 @@ class TestConfigurableLayouts(unittest.TestCase):
         self.assertEqual(len(frames[0]), 2)
         self.assertEqual(proc.text_extractor.matched_layouts,
                          ["supplier_order_report"])
+
+    # ── output formatting belongs to the layout too ──────────────────────
+    def test_declared_formats_reach_the_workbook(self):
+        # A price read as "4.50" is the number 4.5. Without a declared format
+        # Excel shows "4.5" - the right value, wrong for a price.
+        pdf = os.path.join(self.tmp, "parts.pdf")
+        create_parts_invoice_pdf(pdf)
+        out = os.path.join(self.tmp, "parts.xlsx")
+
+        cfg = dict(self.cfg, report_layouts=[PARTS_INVOICE_LAYOUT])
+        result = PDFProcessor(cfg, self.logger).process(pdf, out)
+        self.assertTrue(result["success"], result["error"])
+
+        wb = load_workbook(out)
+        ws = wb[[s for s in wb.sheetnames if not s.startswith("_")][0]]
+        header_row = next(r for r in ws.iter_rows()
+                          if [c.value for c in r][:1] == ["Line"])
+        cols = {c.value: c.column for c in header_row}
+        first = header_row[0].row + 1
+
+        unit = ws.cell(row=first, column=cols["Unit Price"])
+        self.assertEqual(unit.value, 4.5)              # a real number...
+        self.assertEqual(unit.number_format, "#,##0.00")   # ...shown as 4.50
+
+        total = ws.cell(row=first, column=cols["Total"])
+        self.assertEqual(total.value, 54.0)            # "$54.00" stripped to a number
+        self.assertEqual(total.number_format, "$#,##0.00")
+
+        qty = ws.cell(row=first, column=cols["Qty"])
+        self.assertEqual(qty.value, 12)
+        self.assertIsInstance(qty.value, int)
+        wb.close()
+
+    def test_a_raw_excel_format_string_is_passed_through(self):
+        from pdf_to_excel import ReportLayout
+        spec = dict(PARTS_INVOICE_LAYOUT,
+                    formats={"Total": '"EUR" #,##0.00'})
+        self.assertEqual(ReportLayout(spec).formats["Total"], '"EUR" #,##0.00')
+
+    def test_format_for_an_unknown_column_is_rejected(self):
+        from pdf_to_excel import ReportLayout
+        with self.assertRaises(ValueError):
+            ReportLayout(dict(PARTS_INVOICE_LAYOUT, formats={"Nope": "money"}))
 
     # ── validation belongs to the layout ─────────────────────────────────
     def test_each_layout_validates_by_its_own_rules(self):

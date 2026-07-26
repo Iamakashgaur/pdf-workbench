@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Iamakashgaur/PDF-to-Excel-Converter/actions/workflows/ci.yml/badge.svg)](https://github.com/Iamakashgaur/PDF-to-Excel-Converter/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.13-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-96%20passing-brightgreen)](test_pdf_to_excel.py)
+[![Tests](https://img.shields.io/badge/tests-99%20passing-brightgreen)](test_pdf_to_excel.py)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)
 
 Turns supplier order reports from PDF into reconciled Excel workbooks — and tells you,
@@ -94,7 +94,7 @@ being the moment you start hoping.
 | **Design under constraint** | Three extraction engines tried in order, two of them optional and often absent. Availability is import-gated; missing engines degrade honestly instead of crashing. |
 | **A performance fix** | `_PDFHandles` opens each document once per run instead of once per page, using explicit sentinels — a zero-page PDF is falsy, so truthiness checks leaked handles. |
 | **A measurement bug worth the comment** | `Tables Found` and `Rows Extracted` are deliberately separate. Conflating them displayed a 95-row report as "95 tables". |
-| **Test strategy** | 96 tests. Synthetic PDFs via reportlab for the pipeline; hand-built word-position fixtures for the geometry parser, so column logic is tested without a PDF in the loop; and a set that asserts this README still matches the code it documents. |
+| **Test strategy** | 99 tests. Synthetic PDFs via reportlab for the pipeline; hand-built word-position fixtures for the geometry parser, so column logic is tested without a PDF in the loop; and a set that asserts this README still matches the code it documents. |
 | **CI** | Ubuntu + Windows × Python 3.11/3.13, deliberately green *without* Camelot or Tabula. LibreOffice **is** installed on every leg, so `--to-pdf` is driven against a real `soffice` rather than a mock — and the Windows leg exercises the install-location fallback, since the installer there does not put `soffice` on `PATH`. |
 
 ## Known limitations
@@ -430,6 +430,10 @@ its columns, and the rules that make one of its rows valid. Add shapes in
       "patterns": {
         "Total": "^\\$?\\d[\\d,]*\\.\\d{2}$",
         "Qty": "^\\d+$"
+      },
+      "formats": {
+        "Line": "integer", "Qty": "integer",
+        "Unit Price": "number", "Total": "money"
       }
     }
   ]
@@ -444,6 +448,24 @@ its columns, and the rules that make one of its rows valid. Add shapes in
 | `required` | Columns that must be non-empty. Leave a column out if it is legitimately blank sometimes |
 | `patterns` | Per-column regex a value must match. A column listed here is effectively required |
 | `structural_columns` | Columns a wrapped cell never continues — an amount or a date. A "continuation" line carrying one is not a wrap, so it is reported instead of merged |
+| `formats` | How each column is written to Excel. Drives both the cell format *and* the conversion, so the two cannot disagree |
+
+**Formats.** A price read as `"4.50"` is the number `4.5`; without a declared
+format Excel shows `4.5` — the right value, wrong for a price. Declaring it
+fixes both halves at once: `"$4,722.30"` has its symbol and separators stripped
+so the cell holds a real number, and the format puts them back on screen.
+
+| Alias | Excel format | `"4.50"` → | `"$54.00"` → |
+|---|---|---|---|
+| `money` | `$#,##0.00` | `$4.50` | `$54.00` |
+| `number` | `#,##0.00` | `4.50` | `54.00` |
+| `integer` | `#,##0` | `5` | `54` |
+| `percent` | `0.0%` | — | — |
+| `text` | `@` | `4.50` verbatim | `$54.00` verbatim |
+
+Use `text` for identifiers — it is what stops Excel renumbering an order
+reference or reading `"00123"` as `123`. Anything not in this table is passed
+through as a literal Excel format string, so `"\"EUR\" #,##0.00"` works too.
 
 **How a layout is chosen.** The header test *is* the column test: a line qualifies
 only if it carries every column label as whole words, consecutively and in order.

@@ -823,6 +823,26 @@ DEFAULT_REPORT_LAYOUT: Dict[str, Any] = {
         "Amount": r"^\$?\d[\d,]*\.\d{2}$",
         "Est Shipping Date": r"^\d{1,2}\s+[A-Za-z]{3}\s+\d{4}$",
     },
+    # Identifiers stay text so Excel cannot renumber or re-date them; the
+    # serial is a counter, and the amount is money.
+    "formats": {
+        "S. No.": "integer",
+        "Order No": "text",
+        "Certificate No": "text",
+        "Amount": "money",
+    },
+}
+
+
+# Friendly names for the Excel number formats a report actually needs. Anything
+# not listed is passed through as a literal Excel format string, so an unusual
+# case is possible without this table having to anticipate it.
+NUMBER_FORMAT_ALIASES: Dict[str, str] = {
+    "money": "$#,##0.00",
+    "number": "#,##0.00",
+    "integer": "#,##0",
+    "percent": "0.0%",
+    "text": "@",
 }
 
 
@@ -882,6 +902,17 @@ class ReportLayout:
         self.structural_columns = _known(
             list(spec.get("structural_columns") or []), "structural_columns")
         self.required = _known(list(spec.get("required") or []), "required")
+
+        # How each column is written to Excel. A price read as "4.50" is the
+        # number 4.5, and without a declared format Excel shows it as "4.5" -
+        # right value, wrong for money. Declaring it here drives both the cell
+        # format and how the string is converted, so the two cannot disagree.
+        raw_formats = spec.get("formats") or {}
+        _known(list(raw_formats), "formats")
+        self.formats: Dict[str, str] = {
+            col: NUMBER_FORMAT_ALIASES.get(str(fmt), str(fmt))
+            for col, fmt in raw_formats.items()
+        }
 
     def column_names(self) -> List[str]:
         return [n for n, _ in self.columns]
@@ -1201,6 +1232,9 @@ class TextExtractor:
         # Layout names that actually read something, surfaced in the workbook's
         # metadata so the output says which shape it was read as.
         self.matched_layouts: List[str] = []
+        # Column formats declared by the layout that matched, carried through
+        # to the Excel writer so a configured money column is written as money.
+        self.column_formats: Dict[str, str] = {}
 
     def extract(self, pdf_path: str, page_nums: List[int]) -> List[Dict]:
         results = []
@@ -1308,6 +1342,7 @@ class TextExtractor:
 
         if layout.name not in self.matched_layouts:
             self.matched_layouts.append(layout.name)
+        self.column_formats = dict(layout.formats)
 
         self.logger.info(
             f"Page {page_num+1}: read {len(kept)} row(s) from the "
@@ -1551,8 +1586,15 @@ class ExcelBuilder:
 
     def add_dataframe(
         self, df: pd.DataFrame, sheet_name: str,
-        title: str = ""
+        title: str = "", formats: Optional[Dict[str, str]] = None
     ) -> None:
+        """Write a sheet. `formats` maps column name -> Excel number format.
+
+        A declared format wins over the name-based defaults below, which only
+        know the built-in report's column names and cannot know what a
+        configured layout calls its money column.
+        """
+        formats = formats or {}
         if df is None or df.empty:
             return
 
@@ -1592,9 +1634,16 @@ class ExcelBuilder:
         for r_idx, row_data in enumerate(df.itertuples(index=False), 1):
             for c_idx, value in enumerate(row_data, 1):
                 col_name = str(cols[c_idx - 1])
-                cell = ws.cell(row=row_offset + r_idx, column=c_idx,
-                               value=self._coerce_value(value, col_name))
-                self._apply_cell_format(cell, col_name)
+                declared = formats.get(col_name)
+                if declared:
+                    cell = ws.cell(
+                        row=row_offset + r_idx, column=c_idx,
+                        value=self._coerce_for_format(value, declared))
+                    cell.number_format = declared
+                else:
+                    cell = ws.cell(row=row_offset + r_idx, column=c_idx,
+                                   value=self._coerce_value(value, col_name))
+                    self._apply_cell_format(cell, col_name)
                 if self.config.get("apply_table_style", True):
                     if r_idx % 2 == 0:
                         cell.fill = alt_fill
@@ -1603,6 +1652,38 @@ class ExcelBuilder:
 
         # Auto-adjust column widths
         self._auto_size_columns(ws, df, row_offset)
+
+    def _coerce_for_format(self, value: Any, number_format: str) -> Any:
+        """Convert a value to suit the format its layout declared for it.
+
+        A money or number format needs an actual number in the cell, or Excel
+        shows the raw string and the format does nothing - so "$4,722.30" has
+        its currency symbol and separators stripped here. A text format keeps
+        the value verbatim, which is what protects identifiers.
+        """
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+
+        text = str(value).strip()
+        if not text:
+            return None
+        if "@" in number_format:
+            return text
+
+        # Strip anything that is decoration rather than magnitude: currency
+        # symbols, thousands separators, stray spaces.
+        cleaned = re.sub(r"[^\d.\-]", "", text)
+        if not cleaned or cleaned in {"-", ".", "-."}:
+            return text          # not a number after all; keep what was read
+        try:
+            number = float(cleaned)
+        except ValueError:
+            return text
+
+        # A format with no decimal places wants an integer in the cell.
+        if "." not in number_format and number == int(number):
+            return int(number)
+        return number
 
     def _coerce_value(self, value: Any, col_name: str = "") -> Any:
         if pd.isna(value) if isinstance(value, float) else value is None:
@@ -1738,6 +1819,7 @@ class PDFProcessor:
         # Per-document state: this processor is reused across a batch run.
         self.text_extractor.dropped_rows = []
         self.text_extractor.matched_layouts = []
+        self.text_extractor.column_formats = {}
 
         datasets: List[Dict[str, Any]] = []
         text_blocks: List[Dict[str, str]] = []
@@ -1779,6 +1861,7 @@ class PDFProcessor:
                         "name": "Text_Data",
                         "title": "Extracted Text Data",
                         "dataframe": combined_df,
+                        "formats": dict(self.text_extractor.column_formats),
                     })
                 else:
                     for item in text_data:
@@ -1789,6 +1872,7 @@ class PDFProcessor:
                                 "name": name,
                                 "title": f"Page {item['page']} - Text",
                                 "dataframe": df,
+                                "formats": dict(self.text_extractor.column_formats),
                             })
                         else:
                             text_blocks.append({"name": name, "text": item["text"]})
@@ -1889,7 +1973,9 @@ class PDFProcessor:
             rows_extracted = sum(len(ds["dataframe"]) for ds in datasets)
 
             for ds in datasets:
-                builder.add_dataframe(ds["dataframe"], ds["name"], title=ds["title"])
+                builder.add_dataframe(ds["dataframe"], ds["name"],
+                                      title=ds["title"],
+                                      formats=ds.get("formats"))
             for block in text_blocks:
                 builder.add_text_sheet(block["text"], block["name"])
 

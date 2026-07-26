@@ -98,7 +98,7 @@ expressive direction.
 
 - Verified against six live supplier invoices: **100 of 100 line items
   extracted, reconciling to the cent** ($91,948.90 across the six).
-- Automated test suite: 96 tests, all passing.
+- Automated test suite: 99 tests, all passing.
 - Real invoice PDFs exist locally but are **not** in the repository, and
   generated workbooks are git-ignored because they carry customer data.
 - No public customers, testimonials, benchmarks or pricing exist. Do not invent
