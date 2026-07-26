@@ -811,6 +811,18 @@ class ReportColumnParser:
                           else (left + right) / 2.0)
         return bounds
 
+    @staticmethod
+    def _is_non_row(line: List[Dict]) -> bool:
+        """True for a repeated header or a recognised footer line.
+
+        Used both to skip these lines when reading rows and to keep them out of
+        the boundary calibration, so the two can never disagree.
+        """
+        text = " ".join(w["text"] for w in line).strip()
+        if text.startswith("S. No.") and "Customer" in text:
+            return True
+        return bool(TextExtractor.FOOTER_MARKER.match(text))
+
     def _column_of(self, x: float, bounds: List[float]) -> int:
         col = 0
         for b in bounds:
@@ -848,16 +860,23 @@ class ReportColumnParser:
         body = lines[hdr_i + 1:]
         if not body:
             return []
-        bounds = self._boundaries(anchors, body)
+
+        # Calibrate from data rows only. Footers and repeated headers do not
+        # sit in the table's columns, and their words can land squarely in the
+        # empty strip that separates two columns - "Total: $19,824.50" printed
+        # under the first column fills the gap between S. No. and Customer
+        # Name, moving the boundary right and swallowing the first name into
+        # the serial column, which rejects every row on the page. The row loop
+        # below already skips these lines; the geometry has to skip them too.
+        calibration = [ln for ln in body if not self._is_non_row(ln)]
+        bounds = self._boundaries(anchors, calibration or body)
         names = [n for n, _ in self.COLUMNS]
 
         rows: List[Dict[str, str]] = []
         for ln in body:
             text = " ".join(w["text"] for w in ln).strip()
             # Repeated header on a later page, or a summary/footer line.
-            if text.startswith("S. No.") and "Customer" in text:
-                continue
-            if TextExtractor.FOOTER_MARKER.match(text):
+            if self._is_non_row(ln):
                 continue
 
             cells = {n: [] for n in names}

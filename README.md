@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Iamakashgaur/PDF-to-Excel-Converter/actions/workflows/ci.yml/badge.svg)](https://github.com/Iamakashgaur/PDF-to-Excel-Converter/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.13-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-65%20passing-brightgreen)](test_pdf_to_excel.py)
+[![Tests](https://img.shields.io/badge/tests-67%20passing-brightgreen)](test_pdf_to_excel.py)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)
 
 Turns supplier order reports from PDF into reconciled Excel workbooks — and tells you,
@@ -10,6 +10,19 @@ every single time, whether anything was left behind.
 
 **Verified against six live supplier invoices: 100 of 100 line items extracted,
 reconciling to the cent ($91,948.90).**
+
+![The converter reconciling an extracted report against the invoice's own stated total](docs/demo.png)
+
+<sub>The web UI after a conversion. It reads the invoice's own `8 Items - $19,824.50`
+header line, sums what it actually extracted, and leads with the difference — `$0.00`
+here — so you can see the file is complete before you download it. Rows 4 and 7 are
+settings with **no certificate at all**, which the column parser handles as an empty
+column rather than a failed match.</sub>
+
+<sub>*Real screenshot of the running app. The report is synthetic — invented customers,
+order numbers and certificate ids — because real supplier data cannot go in a public
+repository. The arithmetic is genuine: the stated total is correct for those rows, and
+the reconciliation was computed, not staged.*</sub>
 
 ---
 
@@ -81,7 +94,7 @@ being the moment you start hoping.
 | **Design under constraint** | Three extraction engines tried in order, two of them optional and often absent. Availability is import-gated; missing engines degrade honestly instead of crashing. |
 | **A performance fix** | `_PDFHandles` opens each document once per run instead of once per page, using explicit sentinels — a zero-page PDF is falsy, so truthiness checks leaked handles. |
 | **A measurement bug worth the comment** | `Tables Found` and `Rows Extracted` are deliberately separate. Conflating them displayed a 95-row report as "95 tables". |
-| **Test strategy** | 65 tests. Synthetic PDFs via reportlab for the pipeline; hand-built word-position fixtures for the geometry parser, so column logic is tested without a PDF in the loop; and a set that asserts this README still matches the code it documents. |
+| **Test strategy** | 67 tests. Synthetic PDFs via reportlab for the pipeline; hand-built word-position fixtures for the geometry parser, so column logic is tested without a PDF in the loop; and a set that asserts this README still matches the code it documents. |
 | **CI** | Ubuntu + Windows × Python 3.11/3.13, deliberately green *without* the optional engines installed. |
 
 ## Known limitations

@@ -367,6 +367,17 @@ class TestDocsMatchCode(unittest.TestCase):
         self.assertIn('id="reference"', html)
         self.assertIn("README.md", html)
 
+    def test_readme_screenshot_exists(self):
+        # A README whose lead image 404s looks worse than one with no image.
+        for match in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", self.readme):
+            if match.startswith("http"):
+                continue
+            path = os.path.join(self.ROOT, match.replace("/", os.sep))
+            self.assertTrue(
+                os.path.isfile(path),
+                f"README.md references an image that is not in the repo: {match}"
+            )
+
     def test_stated_test_count_is_accurate(self):
         # Both README.md and PRODUCT.md advertise this number, and it has gone
         # stale twice. It is a claim made to anyone reading the repo.
@@ -1223,6 +1234,22 @@ class TestReportColumnParser(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["Item"], "Round")
         self.assertEqual(self.parser.unparsed_lines, ["Reference ABC"])
+
+    def test_footer_does_not_skew_column_calibration(self):
+        # Column boundaries are calibrated from the widest empty strip between
+        # two header anchors. A footer printed under the leftmost column -
+        # "Total: $94,222.52" - puts words squarely in the strip that separates
+        # S. No. from Customer Name. Calibrating from it moved the split to the
+        # right, so the first name was swallowed into the serial column, the
+        # serial stopped being a bare digit, and every row on the page was
+        # rejected. The row loop already skipped footers; the geometry did not.
+        footer = [_w("Total:", 50, 74, 160), _w("$94,222.52", 74, 140, 160)]
+        rows = self.parser.parse_page(self._page(footer))
+
+        self.assertEqual(len(rows), 1, f"footer skewed calibration: {rows}")
+        self.assertEqual(rows[0]["S. No."], "1")
+        self.assertEqual(rows[0]["Customer Name"], "John Smith")
+        self.assertEqual(self.parser.unparsed_lines, [])
 
     def test_page_with_no_valid_rows_still_reports_every_line(self):
         # A page the parser read, but where nothing survived validation. The
