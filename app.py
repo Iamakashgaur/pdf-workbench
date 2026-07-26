@@ -488,20 +488,26 @@ st.markdown("""
 <h1 class="app-h1">PDF to Excel</h1>
 <p class="app-sub">Extracts every line item from a supplier PDF and reconciles the
 result against the invoice's own stated total, so you can see the conversion is
-complete before you download it.</p>
+complete before you download it. Drop a Word, Excel or PowerPoint document
+instead and it is converted <em>into</em> PDF.</p>
 """, unsafe_allow_html=True)
 
-uploaded = st.file_uploader("Report PDF", type=UPLOAD_TYPES,
-                            label_visibility="collapsed")
+# The label is hidden but is still the accessible name a screen reader reads
+# out, so it has to describe what the control now takes - not just PDFs.
+uploaded = st.file_uploader("Report PDF, or a document to convert into PDF",
+                            type=UPLOAD_TYPES, label_visibility="collapsed")
 
 if not uploaded:
     st.markdown("""
-    <p class="app-help">Accepts digital, scanned and mixed PDFs — the type is detected
-    per page, so there is nothing to configure for a normal report. Scanned pages need
-    Tesseract installed; without it they are skipped and reported rather than dropped.</p>
-    <p class="app-help">Drop a Word, Excel, PowerPoint or HTML document instead and it
-    is converted <em>into</em> PDF. The file decides which happens — there is nothing
-    to switch.</p>
+    <p class="app-help"><strong>The file decides what happens</strong> — a PDF is read,
+    anything else is converted into one. There is nothing to switch.</p>
+    <p class="app-help">Digital, scanned and mixed PDFs are all handled, and the type is
+    detected per page, so there is nothing to configure for a normal report. Scanned
+    pages need Tesseract installed; without it they are skipped and reported rather
+    than dropped.</p>
+    <p class="app-help">Password-protected PDFs are read too. You are asked for the
+    password when one is dropped; it is used for that conversion only and is never
+    written to the log or to disk.</p>
     """, unsafe_allow_html=True)
     st.stop()
 
