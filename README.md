@@ -95,7 +95,7 @@ being the moment you start hoping.
 | **A performance fix** | `_PDFHandles` opens each document once per run instead of once per page, using explicit sentinels — a zero-page PDF is falsy, so truthiness checks leaked handles. |
 | **A measurement bug worth the comment** | `Tables Found` and `Rows Extracted` are deliberately separate. Conflating them displayed a 95-row report as "95 tables". |
 | **Test strategy** | 79 tests. Synthetic PDFs via reportlab for the pipeline; hand-built word-position fixtures for the geometry parser, so column logic is tested without a PDF in the loop; and a set that asserts this README still matches the code it documents. |
-| **CI** | Ubuntu + Windows × Python 3.11/3.13, deliberately green *without* the optional engines installed. |
+| **CI** | Ubuntu + Windows × Python 3.11/3.13, deliberately green *without* Camelot or Tabula. LibreOffice **is** installed on every leg, so `--to-pdf` is driven against a real `soffice` rather than a mock — and the Windows leg exercises the install-location fallback, since the installer there does not put `soffice` on `PATH`. |
 
 ## Known limitations
 
