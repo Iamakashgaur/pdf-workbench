@@ -47,15 +47,36 @@ jobs:
             libreoffice-writer libreoffice-calc
           soffice --version
 
+      # Tolerated on failure on purpose. This pulls a ~350 MB installer from a
+      # third-party mirror that intermittently times out, and the Chocolatey
+      # package lags upstream releases - so its URL can 404 for a day after a
+      # LibreOffice version bump. A slow mirror is not a broken build.
+      #
+      # When it does fail, the live conversion test skips itself and the run
+      # reports "OK (skipped=1)" instead of "OK", so the lost coverage is
+      # visible in the log rather than silently assumed.
       - name: Install LibreOffice (Windows)
         if: runner.os == 'Windows'
+        continue-on-error: true
         run: |
-          choco install libreoffice-fresh -y --no-progress
           $exe = "C:\Program Files\LibreOffice\program\soffice.exe"
-          if (-not (Test-Path $exe)) { throw "LibreOffice not found at $exe" }
-          # Deliberately not added to PATH: leaving it off is what makes this
-          # job cover the discovery fallback.
-          Write-Host "installed: $exe"
+          foreach ($attempt in 1..3) {
+            Write-Host "LibreOffice install, attempt $attempt of 3"
+            try { choco install libreoffice-fresh -y --no-progress } catch {
+              Write-Host "attempt $attempt raised: $_"
+            }
+            if (Test-Path $exe) { break }
+            if ($attempt -lt 3) { Start-Sleep -Seconds 25 }
+          }
+          if (Test-Path $exe) {
+            # Deliberately not added to PATH: leaving it off is what makes this
+            # job cover the install-location fallback in _find_binary.
+            Write-Host "installed: $exe"
+          } else {
+            Write-Warning ("LibreOffice unavailable after 3 attempts. The live " +
+                           "conversion test will skip on this leg; see the test " +
+                           "summary for 'skipped=1'.")
+          }
 
       # Camelot and Tabula are optional fallback engines that need system
       # software (Ghostscript / Java); the suite is designed to run without
