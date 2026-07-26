@@ -2013,9 +2013,15 @@ class DocumentToPDFConverter:
 
     # ── conversion ───────────────────────────────────────────
     def convert(
-        self, input_path: str, output_dir: str, timeout: int = 180
+        self, input_path: str, output_dir: str, timeout: int = 180,
+        output_name: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Convert one document to PDF. Returns a result dict; never raises."""
+        """Convert one document to PDF. Returns a result dict; never raises.
+
+        `output_name` (without extension) overrides the name taken from the
+        source stem, which is how convert_folder keeps two same-named documents
+        from landing on top of each other.
+        """
         result: Dict[str, Any] = {
             "input": input_path,
             "output": None,
@@ -2050,11 +2056,21 @@ class DocumentToPDFConverter:
                 return result
 
             os.makedirs(output_dir, exist_ok=True)
-            expected = os.path.join(output_dir, Path(input_path).stem + ".pdf")
+            final_path = os.path.join(
+                output_dir, (output_name or Path(input_path).stem) + ".pdf"
+            )
 
-            with tempfile.TemporaryDirectory(prefix="lo_profile_") as profile:
+            # soffice names its output after the source stem and offers no way
+            # to override it, so it writes into a staging directory and the
+            # result is moved to the name the caller reserved. That is what
+            # lets two same-named sources coexist in one output folder.
+            with tempfile.TemporaryDirectory(prefix="lo_") as work:
+                profile = os.path.join(work, "profile")
+                staged_dir = os.path.join(work, "out")
+                os.makedirs(staged_dir)
+
                 cmd = self._command(binary, os.path.abspath(input_path),
-                                    os.path.abspath(output_dir), profile)
+                                    staged_dir, profile)
                 self.logger.debug("LibreOffice: " + " ".join(cmd))
                 try:
                     proc = subprocess.run(
@@ -2067,20 +2083,24 @@ class DocumentToPDFConverter:
                     result["error"] = f"Could not run LibreOffice: {e}"
                     return result
 
-            # The exit code alone is not trustworthy - soffice returns 0 in
-            # cases where it wrote nothing at all - so the output file is the
-            # thing actually checked.
-            if not os.path.isfile(expected):
-                detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-                result["error"] = (
-                    f"LibreOffice produced no PDF (exit {proc.returncode})"
-                    + (f": {detail[-1][:200]}" if detail else "")
-                )
-                return result
+                staged = os.path.join(staged_dir, Path(input_path).stem + ".pdf")
 
-            result["output"] = expected
+                # The exit code alone is not trustworthy - soffice returns 0 in
+                # cases where it wrote nothing at all - so the output file is
+                # the thing actually checked.
+                if not os.path.isfile(staged):
+                    detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+                    result["error"] = (
+                        f"LibreOffice produced no PDF (exit {proc.returncode})"
+                        + (f": {detail[-1][:200]}" if detail else "")
+                    )
+                    return result
+
+                shutil.move(staged, final_path)
+
+            result["output"] = final_path
             result["success"] = True
-            self.logger.info(f"Converted '{input_path}' -> '{expected}'")
+            self.logger.info(f"Converted '{input_path}' -> '{final_path}'")
             return result
 
         except Exception as e:                       # pragma: no cover - defensive
@@ -2089,6 +2109,29 @@ class DocumentToPDFConverter:
             return result
         finally:
             result["duration_sec"] = (datetime.now() - start).total_seconds()
+
+    def _reserve_name(self, src: Path, taken: Dict[str, Path]) -> str:
+        """Claim an output name no other document in this run is using.
+
+        The folder walk is recursive, so 'jan/report.txt' and 'feb/report.html'
+        both want report.pdf. Letting them share it meant the second silently
+        overwrote the first while both were reported as converted - the same
+        loss BatchProcessor guards against on the Excel side.
+        """
+        base = src.stem
+        name, counter = base, 1
+        while name in taken:
+            counter += 1
+            name = f"{base}_{counter}"
+
+        if counter > 1:
+            self.logger.warning(
+                f"Output name '{base}.pdf' was already claimed by "
+                f"'{taken[base]}'; writing '{src}' to '{name}.pdf' instead."
+            )
+
+        taken[name] = src
+        return name
 
     def convert_folder(
         self, input_dir: str, output_dir: str
@@ -2105,11 +2148,17 @@ class DocumentToPDFConverter:
             return []
 
         results = []
+        taken: Dict[str, Path] = {}
         for i, path in enumerate(files, 1):
             print(f"[{i}/{len(files)}] Converting: {path.name}")
-            r = self.convert(str(path), output_dir)
+            r = self.convert(str(path), output_dir,
+                             output_name=self._reserve_name(path, taken))
             results.append(r)
-            print(f"  → {'OK' if r['success'] else 'FAIL: ' + str(r['error'])}")
+            # ASCII arrow on purpose: this goes through plain print(), which
+            # encodes with the console codepage. A "→" raises UnicodeEncodeError
+            # on a cp1252 console - including any Windows run redirected to a
+            # file - and would take down the whole batch mid-way.
+            print(f"  -> {'OK' if r['success'] else 'FAIL: ' + str(r['error'])}")
         return results
 
 

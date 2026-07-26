@@ -559,8 +559,11 @@ class TestDocumentToPDF(unittest.TestCase):
         expected = os.path.join(self.out, "report.pdf")
 
         def fake_run(cmd, **kw):
-            os.makedirs(self.out, exist_ok=True)
-            with open(expected, "wb") as fh:
+            # Mimic soffice: write <stem>.pdf into whatever --outdir names,
+            # which is a staging directory, not the caller's output folder.
+            outdir = cmd[cmd.index("--outdir") + 1]
+            os.makedirs(outdir, exist_ok=True)
+            with open(os.path.join(outdir, Path(cmd[-1]).stem + ".pdf"), "wb") as fh:
                 fh.write(b"%PDF-1.4\n")
             return sp.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
@@ -581,6 +584,39 @@ class TestDocumentToPDF(unittest.TestCase):
             r = conv.convert(self.docx, self.out, timeout=5)
         self.assertFalse(r["success"])
         self.assertIn("timed out", r["error"])
+
+    def test_same_stem_in_subfolders_does_not_overwrite(self):
+        # The folder walk is recursive, so two documents can share a stem.
+        # Letting them share the output name meant the second silently
+        # overwrote the first while both were reported converted.
+        import subprocess as sp
+        for sub, ext in (("jan", ".txt"), ("feb", ".html")):
+            folder = os.path.join(self.tmp, "docs", sub)
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, "report" + ext), "w") as fh:
+                fh.write(sub)
+
+        conv = self._conv()
+        conv._binary = "soffice"
+
+        def fake_run(cmd, **kw):
+            # Mimic soffice: write <stem>.pdf into whatever --outdir says.
+            outdir = cmd[cmd.index("--outdir") + 1]
+            stem = Path(cmd[-1]).stem
+            os.makedirs(outdir, exist_ok=True)
+            with open(os.path.join(outdir, stem + ".pdf"), "wb") as fh:
+                fh.write(b"%PDF-1.4\n")
+            return sp.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with unittest.mock.patch("pdf_to_excel.subprocess.run", side_effect=fake_run):
+            results = conv.convert_folder(os.path.join(self.tmp, "docs"), self.out)
+
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(r["success"] for r in results), results)
+        outputs = {r["output"] for r in results}
+        self.assertEqual(len(outputs), 2, "both documents wrote to one path")
+        for path in outputs:
+            self.assertTrue(os.path.isfile(path), f"missing: {path}")
 
     # ── live check, skipped unless LibreOffice is actually installed ─────
     def test_real_conversion_if_libreoffice_is_installed(self):
