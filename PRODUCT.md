@@ -28,10 +28,15 @@ worse than no tool at all, because it looks like it worked.
 
 ## Positioning
 
-Beyond generic PDF-to-Excel conversion, it holds a dedicated reader for the
-supplier order report, and it reads that report from the PDF's
-**physical column geometry** rather than by pattern-matching flattened text.
-A value's column is a fact recorded in the file; its shape is only a guess.
+Beyond generic PDF-to-Excel conversion, it holds a dedicated reader for tabular
+reports, and it reads them from the PDF's **physical column geometry** rather
+than by pattern-matching flattened text. A value's column is a fact recorded in
+the file; its shape is only a guess.
+
+Report shapes are configuration, not code: a layout declares its columns *and*
+the rules that make one of its rows valid, and both travel together. The
+supplier order report is the built-in one and is always tried last, so adding a
+layout cannot stop it being read.
 
 That is what lets it handle wrapped cells, blank certificates and unexpected
 product types without special cases — and it is why every row can be accounted
@@ -91,7 +96,7 @@ expressive direction.
 
 - Verified against six live supplier invoices: **100 of 100 line items
   extracted, reconciling to the cent** ($91,948.90 across the six).
-- Automated test suite: 81 tests, all passing.
+- Automated test suite: 88 tests, all passing.
 - Real invoice PDFs exist locally but are **not** in the repository, and
   generated workbooks are git-ignored because they carry customer data.
 - No public customers, testimonials, benchmarks or pricing exist. Do not invent

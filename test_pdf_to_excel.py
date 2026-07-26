@@ -246,6 +246,62 @@ def create_table_then_report_pdf(path: str) -> None:
     c.save()
 
 
+def create_parts_invoice_pdf(path: str) -> None:
+    """A report with a completely different shape from the built-in one.
+
+    Different column names, a different number of them, a different row key and
+    different validation rules - so reading it proves the layout really is data
+    rather than the built-in one wearing new labels.
+    """
+    if not REPORTLAB_AVAILABLE:
+        raise unittest.SkipTest("reportlab not installed")
+
+    from reportlab.pdfgen import canvas as pdfcanvas
+
+    columns = [("Line", 40), ("Description", 90), ("Qty", 300),
+               ("Unit Price", 360), ("Total", 470)]
+    rows = [
+        ["1", "Brass fittings pack", "12", "4.50", "$54.00"],
+        ["2", "Copper tube 15mm", "5", "12.30", "$61.50"],
+        ["3", "Solder reel", "2", "8.75", "$17.50"],
+    ]
+
+    c = pdfcanvas.Canvas(path, pagesize=(612, 400))
+    c.setFont("Helvetica", 9)
+    c.drawString(40, 340, "Parts Invoice PI-2026-0042")
+
+    y = 300
+    for label, x in columns:
+        c.drawString(x, y, label)
+    for row in rows:
+        y -= 19
+        for (_label, x), value in zip(columns, row):
+            c.drawString(x, y, value)
+
+    # A footer that must not be read as a row.
+    c.drawString(40, y - 26, "Total: $133.00")
+    c.showPage()
+    c.save()
+
+
+PARTS_INVOICE_LAYOUT = {
+    "name": "parts_invoice",
+    "columns": [
+        {"name": "Line", "tokens": ["Line"]},
+        {"name": "Description", "tokens": ["Description"]},
+        {"name": "Qty", "tokens": ["Qty"]},
+        {"name": "Unit Price", "tokens": ["Unit", "Price"]},
+        {"name": "Total", "tokens": ["Total"]},
+    ],
+    "row_key": "Line",
+    "structural_columns": ["Total"],
+    "required": ["Description"],
+    "patterns": {"Total": r"^\$?\d[\d,]*\.\d{2}$", "Qty": r"^\d+$"},
+}
+
+PARTS_INVOICE_COLUMNS = ["Line", "Description", "Qty", "Unit Price", "Total"]
+
+
 REPORT_COLUMNS = [
     "S. No.", "Customer Name", "Item", "Product Type", "Certificate No",
     "Order No", "Amount", "Manufacturer", "Est Shipping Date",
@@ -784,6 +840,16 @@ class TestExcelBuilder(unittest.TestCase):
         # A non-numeric serial is left alone rather than forced.
         self.assertEqual(builder._coerce_value("n/a", "S. No."), "n/a")
 
+    def test_zero_padded_values_stay_text(self):
+        # A configured layout can name its identifier columns anything, so the
+        # built-in name list cannot be what protects them. "00123" is a
+        # reference, and int() would silently drop the padding.
+        builder = ExcelBuilder(self.cfg, self.logger)
+        self.assertEqual(builder._coerce_value("00123", "Ref"), "00123")
+        self.assertEqual(builder._coerce_value("0", "Count"), 0)
+        self.assertEqual(builder._coerce_value("42", "Count"), 42)
+        self.assertEqual(builder._coerce_value("-7", "Delta"), -7)
+
     def test_empty_dataframe_skipped(self):
         builder = ExcelBuilder(self.cfg, self.logger)
         builder.add_dataframe(pd.DataFrame(), "Empty")
@@ -1202,6 +1268,127 @@ class TestMixedTableAndReport(unittest.TestCase):
         result = PDFProcessor(self.cfg, self.logger).process(self.pdf, out)
         self.assertTrue(result["success"], result)
         self.assertGreaterEqual(result["rows_extracted"], 2)
+
+
+class TestConfigurableLayouts(unittest.TestCase):
+    """Report shapes come from config, not from the code.
+
+    The built-in supplier report is always appended last, so adding a layout
+    can never stop it being read.
+    """
+
+    def setUp(self):
+        self.tmp = make_test_dir()
+        self.cfg = load_config()
+        self.cfg["log_dir"] = self.tmp
+        self.logger = setup_logging(self.tmp)
+
+    def tearDown(self):
+        close_logger(self.logger)
+        shutil.rmtree(self.tmp)
+
+    def _datasets(self, pdf, cfg):
+        proc = PDFProcessor(cfg, self.logger)
+        info = proc.classifier.classify(pdf)
+        datasets, _ = proc.extract_datasets(pdf, info)
+        return proc, datasets
+
+    # ── a second, differently shaped report ──────────────────────────────
+    def test_a_configured_layout_is_read(self):
+        pdf = os.path.join(self.tmp, "parts.pdf")
+        create_parts_invoice_pdf(pdf)
+
+        cfg = dict(self.cfg, report_layouts=[PARTS_INVOICE_LAYOUT])
+        proc, datasets = self._datasets(pdf, cfg)
+
+        frames = [d["dataframe"] for d in datasets
+                  if list(d["dataframe"].columns) == PARTS_INVOICE_COLUMNS]
+        self.assertTrue(
+            frames,
+            f"configured layout not read; got {[list(d['dataframe'].columns) for d in datasets]}"
+        )
+        df = frames[0]
+        self.assertEqual(len(df), 3)
+        self.assertEqual(list(df["Line"]), ["1", "2", "3"])
+        self.assertEqual(df.loc[0, "Description"], "Brass fittings pack")
+        self.assertEqual(df.loc[2, "Total"], "$17.50")
+        # The trailing "Total: $133.00" is a footer, not a fourth row.
+        self.assertEqual(proc.text_extractor.dropped_rows, [])
+        self.assertEqual(proc.text_extractor.matched_layouts, ["parts_invoice"])
+
+    def test_without_the_config_that_pdf_is_not_a_known_report(self):
+        # Same document, no layout configured: it must not be silently forced
+        # into the built-in shape.
+        pdf = os.path.join(self.tmp, "parts.pdf")
+        create_parts_invoice_pdf(pdf)
+
+        proc, datasets = self._datasets(pdf, self.cfg)
+        for d in datasets:
+            self.assertNotEqual(list(d["dataframe"].columns), PARTS_INVOICE_COLUMNS)
+        self.assertEqual(proc.text_extractor.matched_layouts, [])
+
+    def test_builtin_still_read_when_layouts_are_configured(self):
+        # The built-in is appended last, so adding layouts cannot displace it.
+        pdf = os.path.join(self.tmp, "report.pdf")
+        create_order_report_pdf(pdf)
+
+        cfg = dict(self.cfg, report_layouts=[PARTS_INVOICE_LAYOUT])
+        proc, datasets = self._datasets(pdf, cfg)
+
+        frames = [d["dataframe"] for d in datasets
+                  if list(d["dataframe"].columns) == REPORT_COLUMNS]
+        self.assertTrue(frames, "built-in layout stopped working")
+        self.assertEqual(len(frames[0]), 2)
+        self.assertEqual(proc.text_extractor.matched_layouts,
+                         ["supplier_order_report"])
+
+    # ── validation belongs to the layout ─────────────────────────────────
+    def test_each_layout_validates_by_its_own_rules(self):
+        from pdf_to_excel import ReportLayout
+
+        parts = ReportLayout(PARTS_INVOICE_LAYOUT)
+        row = {"Line": "1", "Description": "Brass fittings pack",
+               "Qty": "12", "Unit Price": "4.50", "Total": "$54.00"}
+        self.assertTrue(parts.row_is_complete(row))
+
+        # The built-in's rules demand an Order No and a shipping date, which
+        # this row has never heard of. Judged by them it would be excluded -
+        # which is exactly why validation travels with the layout.
+        from pdf_to_excel import DEFAULT_REPORT_LAYOUT
+        self.assertFalse(ReportLayout(DEFAULT_REPORT_LAYOUT).row_is_complete(row))
+
+        self.assertFalse(parts.row_is_complete({**row, "Total": "n/a"}))
+        self.assertFalse(parts.row_is_complete({**row, "Description": ""}))
+
+    # ── malformed config degrades, it does not crash ─────────────────────
+    def test_malformed_layout_is_skipped_with_a_warning(self):
+        from pdf_to_excel import load_report_layouts
+
+        broken = [
+            {"name": "no-columns", "columns": []},
+            {"name": "unknown-required",
+             "columns": [{"name": "A", "tokens": ["A"]}], "required": ["Nope"]},
+            {"name": "bad-regex",
+             "columns": [{"name": "A", "tokens": ["A"]}],
+             "patterns": {"A": "([unclosed"}},
+            {"name": "duplicate",
+             "columns": [{"name": "A", "tokens": ["A"]},
+                         {"name": "A", "tokens": ["B"]}]},
+        ]
+        with self.assertLogs(self.logger, level="WARNING") as caught:
+            layouts = load_report_layouts({"report_layouts": broken}, self.logger)
+
+        self.assertEqual([lay.name for lay in layouts], ["supplier_order_report"],
+                         "a broken layout survived, or the built-in was lost")
+        self.assertEqual(len(caught.output), len(broken),
+                         "every rejected layout must say why")
+
+    def test_configured_layouts_are_tried_before_the_builtin(self):
+        from pdf_to_excel import load_report_layouts
+        layouts = load_report_layouts(
+            {"report_layouts": [PARTS_INVOICE_LAYOUT]}, self.logger)
+        self.assertEqual([lay.name for lay in layouts],
+                         ["parts_invoice", "supplier_order_report"])
 
 
 class TestCsvExport(unittest.TestCase):

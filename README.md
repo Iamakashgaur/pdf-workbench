@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Iamakashgaur/PDF-to-Excel-Converter/actions/workflows/ci.yml/badge.svg)](https://github.com/Iamakashgaur/PDF-to-Excel-Converter/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.13-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-81%20passing-brightgreen)](test_pdf_to_excel.py)
+[![Tests](https://img.shields.io/badge/tests-88%20passing-brightgreen)](test_pdf_to_excel.py)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)
 
 Turns supplier order reports from PDF into reconciled Excel workbooks — and tells you,
@@ -94,15 +94,17 @@ being the moment you start hoping.
 | **Design under constraint** | Three extraction engines tried in order, two of them optional and often absent. Availability is import-gated; missing engines degrade honestly instead of crashing. |
 | **A performance fix** | `_PDFHandles` opens each document once per run instead of once per page, using explicit sentinels — a zero-page PDF is falsy, so truthiness checks leaked handles. |
 | **A measurement bug worth the comment** | `Tables Found` and `Rows Extracted` are deliberately separate. Conflating them displayed a 95-row report as "95 tables". |
-| **Test strategy** | 81 tests. Synthetic PDFs via reportlab for the pipeline; hand-built word-position fixtures for the geometry parser, so column logic is tested without a PDF in the loop; and a set that asserts this README still matches the code it documents. |
+| **Test strategy** | 88 tests. Synthetic PDFs via reportlab for the pipeline; hand-built word-position fixtures for the geometry parser, so column logic is tested without a PDF in the loop; and a set that asserts this README still matches the code it documents. |
 | **CI** | Ubuntu + Windows × Python 3.11/3.13, deliberately green *without* Camelot or Tabula. LibreOffice **is** installed on every leg, so `--to-pdf` is driven against a real `soffice` rather than a mock — and the Windows leg exercises the install-location fallback, since the installer there does not put `soffice` on `PATH`. |
 
 ## Known limitations
 
 Stated plainly, because a tool that oversells itself is the problem this one exists to fix.
 
-- The column parser targets **one specific report layout**. If those columns are
-  rearranged, it needs a code change — not a config change.
+- Report shapes are configurable ([see below](#report-layouts)), but only for the
+  **column-geometry** reader. If a page's geometry cannot be read at all, the
+  last-resort flat-text parser only knows the built-in supplier report; other
+  layouts fall through to generic text extraction rather than being guessed at.
 - Password-protected PDFs are unsupported.
 - Scanned pages need Tesseract installed. Without it they are skipped and reported,
   never silently dropped.
@@ -122,6 +124,7 @@ Stated plainly, because a tool that oversells itself is the problem this one exi
 | **PDF types** | Native text, scanned (image), mixed content |
 | **Table extraction** | Auto-tries pdfplumber → camelot → tabula (last two optional) |
 | **Order reports** | Reads the report's own column layout: handles wrapped cells, blank certificates and any product type. [Details](#order-reports) |
+| **Report layouts** | Extra report shapes added in `config.json`, columns and validation together — no code change. [Details](#report-layouts) |
 | **OCR** | Tesseract-powered for scanned pages |
 | **Excel output** | Styled headers, alternating rows, auto column widths, frozen panes |
 | **Batch mode** | Entire folder with progress bar + summary report |
@@ -372,6 +375,66 @@ All settings are optional. Missing keys use built-in defaults.
 | `tesseract_path` | `null` | Full path to `tesseract.exe` if it is not on PATH |
 | `java_path` | `null` | Reserved. Currently unused — put Java on PATH for tabula |
 | `libreoffice_path` | `null` | Full path to `soffice` if it is not on PATH. Only used by `--to-pdf` |
+| `report_layouts` | `null` | Extra report shapes to recognise. See [Report layouts](#report-layouts) |
+
+---
+
+## Report layouts
+
+The column-geometry reader is not hard-wired to one report. A layout is **data**:
+its columns, and the rules that make one of its rows valid. Add shapes in
+`config.json` under `report_layouts` — no code change.
+
+```json
+{
+  "report_layouts": [
+    {
+      "name": "parts_invoice",
+      "columns": [
+        {"name": "Line",        "tokens": ["Line"]},
+        {"name": "Description", "tokens": ["Description"]},
+        {"name": "Qty",         "tokens": ["Qty"]},
+        {"name": "Unit Price",  "tokens": ["Unit", "Price"]},
+        {"name": "Total",       "tokens": ["Total"]}
+      ],
+      "row_key": "Line",
+      "structural_columns": ["Total"],
+      "required": ["Description"],
+      "patterns": {
+        "Total": "^\\$?\\d[\\d,]*\\.\\d{2}$",
+        "Qty": "^\\d+$"
+      }
+    }
+  ]
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `columns` | Ordered. `tokens` are the header label split into **whole words**, exactly as they appear — `"Unit Price"` is `["Unit", "Price"]` |
+| `row_key` | The column whose value marks a new record. Defaults to the first column |
+| `row_key_pattern` | What that value must look like. Defaults to `^\d+$` |
+| `required` | Columns that must be non-empty. Leave a column out if it is legitimately blank sometimes |
+| `patterns` | Per-column regex a value must match. A column listed here is effectively required |
+| `structural_columns` | Columns a wrapped cell never continues — an amount or a date. A "continuation" line carrying one is not a wrap, so it is reported instead of merged |
+
+**How a layout is chosen.** The header test *is* the column test: a line qualifies
+only if it carries every column label as whole words, consecutively and in order.
+That is strict enough to identify the layout outright, so no layout needs a
+separate "does this look like mine" rule.
+
+**Two guarantees worth knowing.**
+
+Configured layouts are tried **first**, and the built-in supplier report is always
+appended **last** — so adding a layout can never stop the original from being read.
+
+**Validation travels with the layout.** This is the point of the design, not a
+detail: judging one report by another's required fields would let a new layout
+parse perfectly and then have every row rejected and reported as excluded — this
+tool's loudest alarm, firing at nothing. A malformed layout is reported and
+skipped individually; the others, and the built-in, are unaffected.
+
+The workbook's `_Metadata` sheet records which layout read the file.
 
 The `_Metadata` sheet records the source file, page counts, and the **Unparsed Report Rows** total — see [Rows that don't match](#rows-that-dont-match). Set `add_metadata_sheet` to `false` to omit it.
 

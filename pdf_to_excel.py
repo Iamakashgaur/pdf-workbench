@@ -108,6 +108,9 @@ DEFAULT_CONFIG = {
     "tesseract_path": None,
     "java_path": None,
     "libreoffice_path": None,
+    # Extra report shapes to recognise, tried before the built-in one.
+    # See README "Report layouts". None/absent means the built-in only.
+    "report_layouts": None,
     "preview_rows": 10,
     "max_sheet_name_length": 31
 }
@@ -709,8 +712,147 @@ class TableExtractor:
 # REPORT COLUMN PARSER (geometry-based)
 # ────────────────────────────────────────────────────────────
 
+# The report this tool was built for. Kept in code as the always-available
+# fallback, so adding layouts in config can never stop it being read.
+DEFAULT_REPORT_LAYOUT: Dict[str, Any] = {
+    "name": "supplier_order_report",
+    "columns": [
+        {"name": "S. No.", "tokens": ["S.", "No."]},
+        {"name": "Customer Name", "tokens": ["Customer", "Name"]},
+        {"name": "Item", "tokens": ["Item"]},
+        {"name": "Product Type", "tokens": ["Product", "Type"]},
+        {"name": "Certificate No", "tokens": ["Certificate", "No"]},
+        {"name": "Order No", "tokens": ["Order", "No"]},
+        {"name": "Amount", "tokens": ["Amount"]},
+        {"name": "Manufacturer", "tokens": ["Manufacturer"]},
+        {"name": "Est Shipping Date", "tokens": ["Est", "Shipping", "Date"]},
+    ],
+    "row_key": "S. No.",
+    "row_key_pattern": r"^\d+$",
+    # Single-line columns a wrapped descriptive cell never fills. A wrap only
+    # ever continues a descriptive column; it does not restate an Amount or a
+    # shipping date. So a "continuation" line carrying either is not a wrap - it
+    # is a footer, or a data row whose serial did not extract. Merging it would
+    # silently corrupt or absorb a record.
+    "structural_columns": ["Amount", "Est Shipping Date"],
+    # Certificate No and Product Type are deliberately absent: settings and
+    # mountings legitimately have no certificate.
+    "required": ["Order No"],
+    "patterns": {
+        "Amount": r"^\$?\d[\d,]*\.\d{2}$",
+        "Est Shipping Date": r"^\d{1,2}\s+[A-Za-z]{3}\s+\d{4}$",
+    },
+}
+
+
+class ReportLayout:
+    """One report shape: its columns, and what makes a row of it valid.
+
+    Both halves belong together. Describing a layout's columns without its
+    validation rules would let a new report parse geometrically and then have
+    every row rejected by rules written for a different document - the tool's
+    loudest failure mode firing on a layout that is actually fine.
+    """
+
+    def __init__(self, spec: Dict[str, Any]):
+        self.name = str(spec.get("name") or "unnamed")
+
+        self.columns: List[Tuple[str, Tuple[str, ...]]] = []
+        for entry in spec.get("columns") or []:
+            try:
+                name = str(entry["name"])
+                tokens = tuple(str(t) for t in entry["tokens"])
+            except (TypeError, KeyError) as e:
+                raise ValueError(f"each column needs 'name' and 'tokens' ({e})")
+            if not name or not tokens:
+                raise ValueError("column 'name' and 'tokens' cannot be empty")
+            self.columns.append((name, tokens))
+
+        if not self.columns:
+            raise ValueError("layout defines no columns")
+
+        names = [n for n, _ in self.columns]
+        duplicates = {n for n in names if names.count(n) > 1}
+        if duplicates:
+            raise ValueError(f"duplicate column names: {sorted(duplicates)}")
+
+        def _known(values, field):
+            unknown = [v for v in values if v not in names]
+            if unknown:
+                raise ValueError(f"{field} names unknown columns: {unknown}")
+            return tuple(values)
+
+        self.row_key = str(spec.get("row_key") or names[0])
+        if self.row_key not in names:
+            raise ValueError(f"row_key '{self.row_key}' is not one of the columns")
+
+        try:
+            self.row_key_pattern = re.compile(
+                str(spec.get("row_key_pattern") or r"^\d+$")
+            )
+            self.patterns = {
+                col: re.compile(str(pat))
+                for col, pat in (spec.get("patterns") or {}).items()
+            }
+        except re.error as e:
+            raise ValueError(f"invalid regular expression: {e}")
+
+        _known(list(self.patterns), "patterns")
+        self.structural_columns = _known(
+            list(spec.get("structural_columns") or []), "structural_columns")
+        self.required = _known(list(spec.get("required") or []), "required")
+
+    def column_names(self) -> List[str]:
+        return [n for n, _ in self.columns]
+
+    def is_row_start(self, joined: Dict[str, str]) -> bool:
+        """True when this line begins a new record rather than continuing one."""
+        return bool(self.row_key_pattern.match(joined.get(self.row_key, "").strip()))
+
+    def row_is_complete(self, row: Dict[str, str]) -> bool:
+        """A row must carry the fields that make it a usable record."""
+        if not self.is_row_start(row):
+            return False
+        for col in self.required:
+            if not str(row.get(col, "")).strip():
+                return False
+        for col, pattern in self.patterns.items():
+            if not pattern.match(str(row.get(col, "")).strip()):
+                return False
+        return True
+
+
+def load_report_layouts(
+    config: Optional[dict], logger: logging.Logger
+) -> List[ReportLayout]:
+    """Build the layouts to try, from config plus the built-in one.
+
+    Configured layouts are tried first so they can take precedence, and the
+    built-in is always appended last - adding a layout can therefore never stop
+    the report this tool was written for from being read. A malformed entry is
+    reported and skipped rather than taking the whole run down with it.
+    """
+    layouts: List[ReportLayout] = []
+    for i, spec in enumerate((config or {}).get("report_layouts") or []):
+        try:
+            layouts.append(ReportLayout(spec))
+        except Exception as e:
+            logger.warning(
+                f"config report_layouts[{i}] ignored - {e}. "
+                f"The other layouts are unaffected."
+            )
+
+    layouts.append(ReportLayout(DEFAULT_REPORT_LAYOUT))
+    if len(layouts) > 1:
+        logger.info(
+            "Report layouts in use: "
+            + ", ".join(lay.name for lay in layouts)
+        )
+    return layouts
+
+
 class ReportColumnParser:
-    """Read the supplier order report from the PDF's own column geometry.
+    """Read a tabular report from the PDF's own column geometry.
 
     Matching patterns against the flattened text guesses at structure and fails
     whenever a cell is blank, wraps, or holds an unexpected value. Word
@@ -723,36 +865,21 @@ class ReportColumnParser:
     than hard-coded coordinates.
     """
 
-    COLUMNS: List[Tuple[str, Tuple[str, ...]]] = [
-        ("S. No.", ("S.", "No.")),
-        ("Customer Name", ("Customer", "Name")),
-        ("Item", ("Item",)),
-        ("Product Type", ("Product", "Type")),
-        ("Certificate No", ("Certificate", "No")),
-        ("Order No", ("Order", "No")),
-        ("Amount", ("Amount",)),
-        ("Manufacturer", ("Manufacturer",)),
-        ("Est Shipping Date", ("Est", "Shipping", "Date")),
-    ]
     LINE_TOLERANCE = 3.0     # points; words within this vertical span are one line
 
-    # Single-line columns a wrapped descriptive cell never fills. A wrap only
-    # ever continues Item / Certificate No / Customer Name / Manufacturer /
-    # Product Type; it does not restate an Amount or a shipping date. So a
-    # "continuation" line carrying either is not a wrap — it is a footer or a
-    # data row whose serial did not extract. Merging it would silently corrupt
-    # or absorb a record (principle: never fail silently), so such a line is
-    # recorded as unparsed instead. Order No is deliberately excluded: it sits
-    # next to the wrapping Certificate No column, so guarding on it would risk
-    # rejecting a legitimate certificate wrap that bled a point leftward.
-    STRUCTURAL_COLUMNS: Tuple[str, ...] = ("Amount", "Est Shipping Date")
-
-    def __init__(self, logger: logging.Logger):
+    def __init__(
+        self, logger: logging.Logger,
+        layouts: Optional[List[ReportLayout]] = None
+    ):
         self.logger = logger
+        self.layouts = layouts or [ReportLayout(DEFAULT_REPORT_LAYOUT)]
         # Lines that could be attached to no row during the last parse_page():
         # unrecognised footers, or data rows whose serial did not read. The
         # caller surfaces these so nothing is dropped silently.
         self.unparsed_lines: List[str] = []
+        # Which layout matched the last page parsed, so the caller can label
+        # the result and validate rows by that layout's own rules.
+        self.layout: Optional[ReportLayout] = None
 
     # ── line grouping ────────────────────────────────────────
     def _visual_lines(self, words: List[Dict]) -> List[List[Dict]]:
@@ -765,18 +892,30 @@ class ReportColumnParser:
         return [sorted(ln, key=lambda w: w["x0"]) for ln in lines]
 
     # ── header location ──────────────────────────────────────
-    def _find_header(self, lines: List[List[Dict]]) -> Optional[int]:
+    def _match_header(
+        self, lines: List[List[Dict]]
+    ) -> Optional[Tuple[int, ReportLayout, List[float]]]:
+        """Find the first line that is a header, and say which layout it is.
+
+        The header test *is* the anchor test: a line qualifies only if it
+        carries every column label, as whole words, consecutively and in order.
+        That is strict enough to identify the layout outright, so no layout
+        needs a separate hand-written "does this look like my header" rule.
+        """
         for i, ln in enumerate(lines):
-            text = " ".join(w["text"] for w in ln)
-            if text.startswith("S. No.") and "Customer" in text and "Shipping" in text:
-                return i
+            for layout in self.layouts:
+                anchors = self._header_anchors(ln, layout)
+                if anchors is not None:
+                    return i, layout, anchors
         return None
 
-    def _header_anchors(self, header: List[Dict]) -> Optional[List[float]]:
+    def _header_anchors(
+        self, header: List[Dict], layout: ReportLayout
+    ) -> Optional[List[float]]:
         """Centre x of each column label, in column order."""
         anchors: List[float] = []
         idx = 0
-        for _name, tokens in self.COLUMNS:
+        for _name, tokens in layout.columns:
             start = idx
             for tok in tokens:
                 if idx >= len(header) or header[idx]["text"] != tok:
@@ -815,16 +954,19 @@ class ReportColumnParser:
                           else (left + right) / 2.0)
         return bounds
 
-    @staticmethod
-    def _is_non_row(line: List[Dict]) -> bool:
+    def _is_non_row(self, line: List[Dict], layout: ReportLayout) -> bool:
         """True for a repeated header or a recognised footer line.
 
         Used both to skip these lines when reading rows and to keep them out of
         the boundary calibration, so the two can never disagree.
+
+        A repeated header is detected by running the anchor test again rather
+        than by matching a hard-coded opening string, so this works for any
+        layout without each one having to describe its header twice.
         """
-        text = " ".join(w["text"] for w in line).strip()
-        if text.startswith("S. No.") and "Customer" in text:
+        if self._header_anchors(line, layout) is not None:
             return True
+        text = " ".join(w["text"] for w in line).strip()
         return bool(TextExtractor.FOOTER_MARKER.match(text))
 
     def _column_of(self, x: float, bounds: List[float]) -> int:
@@ -842,6 +984,7 @@ class ReportColumnParser:
         # in between would otherwise leave the previous page's lines in place,
         # and the caller reads this list after the call.
         self.unparsed_lines = []
+        self.layout = None
 
         try:
             words = page.extract_words()
@@ -852,14 +995,12 @@ class ReportColumnParser:
             return None
 
         lines = self._visual_lines(words)
-        hdr_i = self._find_header(lines)
-        if hdr_i is None:
+        match = self._match_header(lines)
+        if match is None:
             return None
 
-        anchors = self._header_anchors(lines[hdr_i])
-        if anchors is None or len(anchors) != len(self.COLUMNS):
-            self.logger.debug("Report header found but column labels did not line up.")
-            return None
+        hdr_i, layout, anchors = match
+        self.layout = layout
 
         body = lines[hdr_i + 1:]
         if not body:
@@ -872,15 +1013,15 @@ class ReportColumnParser:
         # Name, moving the boundary right and swallowing the first name into
         # the serial column, which rejects every row on the page. The row loop
         # below already skips these lines; the geometry has to skip them too.
-        calibration = [ln for ln in body if not self._is_non_row(ln)]
+        calibration = [ln for ln in body if not self._is_non_row(ln, layout)]
         bounds = self._boundaries(anchors, calibration or body)
-        names = [n for n, _ in self.COLUMNS]
+        names = layout.column_names()
 
         rows: List[Dict[str, str]] = []
         for ln in body:
             text = " ".join(w["text"] for w in ln).strip()
             # Repeated header on a later page, or a summary/footer line.
-            if self._is_non_row(ln):
+            if self._is_non_row(ln, layout):
                 continue
 
             cells = {n: [] for n in names}
@@ -888,16 +1029,17 @@ class ReportColumnParser:
                 cells[names[self._column_of(w["x0"], bounds)]].append(w["text"])
             joined = {n: " ".join(v).strip() for n, v in cells.items()}
 
-            if joined["S. No."].isdigit():
+            if layout.is_row_start(joined):
                 rows.append(joined)
                 continue
 
             # Not a new row. It is only a wrapped continuation of the row above
-            # if it carries no single-line structural value (see STRUCTURAL_
-            # COLUMNS). Otherwise it is a footer we did not recognise, or a data
-            # row whose serial did not read — record it rather than merge it, so
-            # a real order can never be silently glued onto its predecessor.
-            structural = any(joined[c] for c in self.STRUCTURAL_COLUMNS)
+            # if it carries no single-line structural value (see the layout's
+            # structural_columns). Otherwise it is a footer we did not
+            # recognise, or a data row whose key did not read — record it rather
+            # than merge it, so a real record can never be silently glued onto
+            # its predecessor.
+            structural = any(joined[c] for c in layout.structural_columns)
             if rows and not structural:
                 for n in names:
                     if joined[n]:
@@ -915,6 +1057,12 @@ class ReportColumnParser:
 class TextExtractor:
     """Extract raw text content page by page."""
 
+    # The flat-text fallback below is specific to the built-in layout: it is a
+    # last resort for when the page geometry cannot be read at all, and a
+    # regex per layout would be a far weaker thing than the column parser that
+    # already handles them. Configured layouts are read by geometry; if that
+    # fails for one, its pages fall through to generic text extraction rather
+    # than being matched by these patterns.
     REPORT_HEADER = (
         "S. No. Customer Name Item Product Type Certificate No "
         "Order No Amount Manufacturer Est Shipping Date"
@@ -962,11 +1110,15 @@ class TextExtractor:
     # Wrapped fragments are short; prose and footers are not.
     MAX_CONTINUATION_TOKENS = 4
 
-    def __init__(self, logger: logging.Logger):
+    def __init__(self, logger: logging.Logger, config: Optional[dict] = None):
         self.logger = logger
         # Report lines that matched no known row shape during the last extract().
         self.dropped_rows: List[str] = []
-        self.column_parser = ReportColumnParser(logger)
+        self.column_parser = ReportColumnParser(
+            logger, load_report_layouts(config, logger))
+        # Layout names that actually read something, surfaced in the workbook's
+        # metadata so the output says which shape it was read as.
+        self.matched_layouts: List[str] = []
 
     def extract(self, pdf_path: str, page_nums: List[int]) -> List[Dict]:
         results = []
@@ -1041,10 +1193,19 @@ class TextExtractor:
         if rows is None:
             return None
 
+        # Validated by the rules of the layout that actually matched, not by a
+        # single fixed rule. Judging one report by another's required fields
+        # would reject every row of a perfectly good page and report the lot as
+        # excluded - the loudest failure this tool has, fired at nothing.
+        layout = self.column_parser.layout
+        if layout is None:
+            return None
+
         kept = []
         for row in rows:
-            if self._row_is_complete(row):
-                row["Item"] = self._normalize_item_whitespace(row.get("Item", ""))
+            if layout.row_is_complete(row):
+                if "Item" in row:
+                    row["Item"] = self._normalize_item_whitespace(row["Item"])
                 kept.append(row)
             else:
                 self._note_dropped_row(
@@ -1059,32 +1220,18 @@ class TextExtractor:
         for line in self.column_parser.unparsed_lines:
             self._note_dropped_row(line)
 
-        columns = [n for n, _ in ReportColumnParser.COLUMNS]
+        columns = layout.column_names()
         if not kept:
             return pd.DataFrame(columns=columns)
 
+        if layout.name not in self.matched_layouts:
+            self.matched_layouts.append(layout.name)
+
         self.logger.info(
-            f"Page {page_num+1}: read {len(kept)} report row(s) from column layout."
+            f"Page {page_num+1}: read {len(kept)} row(s) from the "
+            f"'{layout.name}' column layout."
         )
         return pd.DataFrame(kept, columns=columns)
-
-    @staticmethod
-    def _row_is_complete(row: Dict[str, str]) -> bool:
-        """A row must carry the fields that make it a usable financial record.
-
-        Certificate No and Product Type are deliberately not required: settings
-        and mountings legitimately have no certificate.
-        """
-        if not row.get("S. No.", "").isdigit():
-            return False
-        if not re.match(r"^\$?\d[\d,]*\.\d{2}$", row.get("Amount", "").strip()):
-            return False
-        if not row.get("Order No", "").strip():
-            return False
-        if not re.match(r"^\d{1,2}\s+[A-Za-z]{3}\s+\d{4}$",
-                        row.get("Est Shipping Date", "").strip()):
-            return False
-        return True
 
     def _extract_page_text(
         self, pdf_path: str, page_num: int,
@@ -1404,6 +1551,13 @@ class ExcelBuilder:
         try:
             v = str(value).strip()
             if re.match(r"^-?\d+$", v):
+                # A zero-padded value is an identifier, not a quantity:
+                # "00123" is a reference number and int() would silently drop
+                # the padding. The built-in layout's identifier columns are
+                # named above, but a configured layout can call them anything,
+                # so this has to hold for every column.
+                if len(v.lstrip("-")) > 1 and v.lstrip("-").startswith("0"):
+                    return v
                 return int(v)
             if re.match(r"^-?\d+\.\d+$", v):
                 return float(v)
@@ -1481,7 +1635,7 @@ class PDFProcessor:
         self.logger = logger
         self.classifier = PDFClassifier(logger)
         self.table_extractor = TableExtractor(config, logger)
-        self.text_extractor = TextExtractor(logger)
+        self.text_extractor = TextExtractor(logger, config)
         self.ocr = OCRProcessor(config, logger)
 
     def extract_datasets(
@@ -1501,6 +1655,7 @@ class PDFProcessor:
         """
         # Per-document state: this processor is reused across a batch run.
         self.text_extractor.dropped_rows = []
+        self.text_extractor.matched_layouts = []
 
         datasets: List[Dict[str, Any]] = []
         text_blocks: List[Dict[str, str]] = []
@@ -1667,6 +1822,10 @@ class PDFProcessor:
                     "Tables Found": tables_found,
                     "Rows Extracted": rows_extracted,
                     "Unparsed Report Rows": len(self.text_extractor.dropped_rows),
+                    # Which layout read the file, so the workbook says what
+                    # shape it was understood as rather than leaving it implied.
+                    "Report Layout": ", ".join(
+                        self.text_extractor.matched_layouts) or "not a known report",
                     "Output File": os.path.abspath(output_path),
                     "Tool": "pdf_to_excel.py"
                 }
