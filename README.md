@@ -240,7 +240,7 @@ python pdf_to_excel.py -d ./invoices/ -o ./results/ --preview
 
 ```bash
 # Best: the password never enters shell history or a process listing
-export PDF_TO_EXCEL_PASSWORD='…'          # Windows: $env:PDF_TO_EXCEL_PASSWORD='…'
+export PDF_WORKBENCH_PASSWORD='…'          # Windows: $env:PDF_WORKBENCH_PASSWORD='…'
 python pdf_to_excel.py locked.pdf
 
 # Explicit, if you must
@@ -339,7 +339,7 @@ Options:
   --no-meta             Omit metadata sheet from output
   --keep-empty          Keep empty rows and columns
   --password PASSWORD   Password for an encrypted PDF. Prefer the
-                        PDF_TO_EXCEL_PASSWORD environment variable
+                        PDF_WORKBENCH_PASSWORD environment variable
   --to-pdf              Convert documents INTO PDF via LibreOffice, instead of
                         reading a PDF. Works with -d for a folder
   --gui                 Print the GUI launch command and exit (does not start it)

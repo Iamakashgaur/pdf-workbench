@@ -1376,7 +1376,7 @@ class TestEncryptedPDFs(unittest.TestCase):
         r = self._process()
         self.assertFalse(r["success"])
         self.assertIn("Password required", r["error"])
-        self.assertIn("PDF_TO_EXCEL_PASSWORD", r["error"])
+        self.assertIn("PDF_WORKBENCH_PASSWORD", r["error"])
 
     def test_wrong_password_says_so_specifically(self):
         # Distinct from "required": the holder of the file needs to know which

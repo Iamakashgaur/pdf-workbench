@@ -260,7 +260,7 @@ class _PDFHandles:
 #: Runtime-only. A password is deliberately NOT a config.json setting: that
 #: file is committed, and a credential in a tracked file is a footgun this tool
 #: should not hand anyone. It arrives from --password or the environment.
-PASSWORD_ENV_VAR = "PDF_TO_EXCEL_PASSWORD"
+PASSWORD_ENV_VAR = "PDF_WORKBENCH_PASSWORD"
 
 ACCESS_OK = "ok"
 ACCESS_PASSWORD_REQUIRED = "password_required"
