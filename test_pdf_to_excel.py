@@ -38,12 +38,15 @@ from pdf_to_excel import (
 )
 
 
-TEST_ROOT = Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".codex_test_tmp"
-
-
 def make_test_dir() -> str:
-    TEST_ROOT.mkdir(exist_ok=True)
-    return tempfile.mkdtemp(dir=TEST_ROOT)
+    """A scratch directory under the system temp dir.
+
+    Tests used to write into a fixed folder in the user's home directory, which
+    left a directory behind on every machine that ever ran the suite. The system
+    temp dir is what the platform provides for exactly this, and each test's
+    tearDown removes its own tree.
+    """
+    return tempfile.mkdtemp(prefix="pdf2xl_test_")
 
 
 def close_logger(logger: logging.Logger) -> None:
@@ -181,6 +184,65 @@ def create_order_report_pdf(path: str) -> None:
     c.save()
 
 
+def create_table_then_report_pdf(path: str) -> None:
+    """Page 1: a ruled table. Page 2: an order report with no ruling.
+
+    The mixed case that used to lose data - one table anywhere in the document
+    stopped the text/geometry path from running at all, so page 2 was never
+    read and its excluded-row accounting never happened.
+    """
+    if not REPORTLAB_AVAILABLE:
+        raise unittest.SkipTest("reportlab not installed")
+
+    from reportlab.pdfgen import canvas as pdfcanvas
+
+    c = pdfcanvas.Canvas(path, pagesize=(792, 612))
+
+    # -- Page 1: a genuinely ruled grid, so pdfplumber finds a table ----------
+    # Enough prose to clear the classifier's >50-character text threshold;
+    # below it the page is treated as scanned and never reaches a table engine,
+    # which would make this fixture prove nothing.
+    c.setFont("Helvetica", 10)
+    c.drawString(60, 560, "Quarterly regional summary for the northern and southern")
+    c.drawString(60, 546, "territories, reported in units shipped during the period.")
+
+    grid = [
+        ["Region", "Units", "Revenue"],
+        ["North", "120", "24000.00"],
+        ["South", "340", "68000.00"],
+        ["East", "215", "43000.00"],
+    ]
+    x0, y0, cw, rh = 60, 500, 120, 24
+    for r, row in enumerate(grid):
+        for col, value in enumerate(row):
+            c.rect(x0 + col * cw, y0 - r * rh, cw, rh)
+            c.drawString(x0 + col * cw + 6, y0 - r * rh + 8, value)
+    c.showPage()
+
+    # -- Page 2: the order report, drawn in columns with no ruling -----------
+    c.setFont("Helvetica", 9)
+    columns = [
+        ("S. No.", 40), ("Customer Name", 80), ("Item", 170),
+        ("Product Type", 260), ("Certificate No", 330), ("Order No", 410),
+        ("Amount", 470), ("Manufacturer", 530), ("Est Shipping Date", 620),
+    ]
+    rows = [
+        ["1", "Alex Morgan", "2.14 Round J VS1", "Diamond", "IGI",
+         "A1B2C3D4", "$413.25", "Guild and Facet", "27 Apr 2026"],
+        ["2", "Jordan Avery", "2.20 Emerald J", "Diamond", "IGI 900000001",
+         "E5F6A7B8", "$4722.30", "Guild and Facet", "24 Apr 2026"],
+    ]
+    y = 520
+    for label, x in columns:
+        c.drawString(x, y, label)
+    for row in rows:
+        y -= 18
+        for (_label, x), value in zip(columns, row):
+            c.drawString(x, y, value)
+    c.showPage()
+    c.save()
+
+
 REPORT_COLUMNS = [
     "S. No.", "Customer Name", "Item", "Product Type", "Certificate No",
     "Order No", "Amount", "Manufacturer", "Est Shipping Date",
@@ -237,6 +299,25 @@ class TestConfig(unittest.TestCase):
             f.write("{invalid json}")
         cfg = load_config(cfg_path)
         self.assertEqual(cfg["ocr_language"], "eng")
+
+
+class TestOptionalDependencyHandling(unittest.TestCase):
+    def test_tesseract_path_without_pytesseract_does_not_raise(self):
+        # pytesseract is an optional import, so reading its attributes when the
+        # package is absent raised NameError at construction - hitting exactly
+        # the users who had followed the README and set tesseract_path.
+        import pdf_to_excel as module
+        from pdf_to_excel import OCRProcessor
+
+        original = module.TESSERACT_AVAILABLE
+        module.TESSERACT_AVAILABLE = False
+        try:
+            OCRProcessor(
+                {"tesseract_path": "C:/nowhere/tesseract.exe"},
+                logging.getLogger("test"),
+            )
+        finally:
+            module.TESSERACT_AVAILABLE = original
 
 
 class TestLogging(unittest.TestCase):
@@ -329,6 +410,30 @@ class TestExcelBuilder(unittest.TestCase):
         wb = load_workbook(out)
         names = wb.sheetnames
         self.assertEqual(len(names), len(set(names)))
+
+    def test_duplicate_column_names_do_not_crash(self):
+        # Promoting a header row can produce repeated names. Sizing columns by
+        # label then returned a DataFrame instead of a Series and raised, which
+        # failed the entire file rather than one column's width.
+        df = pd.DataFrame([["a", "b"], ["c", "d"]], columns=["Col", "Col"])
+        builder = ExcelBuilder(self.cfg, self.logger)
+        builder.add_dataframe(df, "Dupes")
+        out = os.path.join(self.tmp, "dupes.xlsx")
+        self.assertTrue(builder.save(out))
+
+        ws = load_workbook(out)["Dupes"]
+        self.assertEqual([c.value for c in ws[1]], ["Col", "Col"])
+
+    def test_serial_number_is_written_as_a_number(self):
+        # Serial numbers stayed text, so Excel flagged the column and sorted
+        # 10 before 2. Identifiers around them must still stay text.
+        builder = ExcelBuilder(self.cfg, self.logger)
+        self.assertEqual(builder._coerce_value("2", "S. No."), 2)
+        self.assertIsInstance(builder._coerce_value("2", "S. No."), int)
+        self.assertEqual(builder._coerce_value("00123456", "Order No"), "00123456")
+        self.assertEqual(builder._coerce_value("$413.25", "Amount"), 413.25)
+        # A non-numeric serial is left alone rather than forced.
+        self.assertEqual(builder._coerce_value("n/a", "S. No."), "n/a")
 
     def test_empty_dataframe_skipped(self):
         builder = ExcelBuilder(self.cfg, self.logger)
@@ -490,7 +595,9 @@ class TestPDFProcessor(unittest.TestCase):
         self.assertIn("Text_Data", wb.sheetnames)
         self.assertNotIn("P1_Text", wb.sheetnames)
         ws = wb["Text_Data"]
-        self.assertEqual(ws.cell(4, 1).value, "1")
+        # Serial numbers are written as numbers, so Excel sorts the column
+        # correctly and stops flagging "number stored as text".
+        self.assertEqual(ws.cell(4, 1).value, 1)
         self.assertEqual(ws.cell(5, 3).value, "3.41 Radiant F VVS2")
 
     def test_combine_extracted_tables_deduplicates(self):
@@ -604,6 +711,77 @@ class TestBatchProcessor(unittest.TestCase):
         self.assertEqual(len(results), 3)
         ok = sum(1 for r in results if r["success"])
         self.assertGreaterEqual(ok, 2)
+
+
+class TestWebApp(unittest.TestCase):
+    """app.py had no automated coverage at all.
+
+    This does not exercise a conversion - that needs an uploaded file - but it
+    does prove the module imports, the token/CSS block renders, and the first
+    viewport reaches its stop point without raising. Streamlit re-runs the whole
+    script on every interaction, so a module-level error there breaks every
+    screen at once.
+    """
+
+    def test_first_viewport_renders_without_exception(self):
+        try:
+            from streamlit.testing.v1 import AppTest
+        except ImportError:  # older streamlit without the testing harness
+            self.skipTest("streamlit.testing.v1 unavailable")
+
+        app_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "app.py"
+        )
+        at = AppTest.from_file(app_path, default_timeout=60).run()
+
+        self.assertFalse(
+            at.exception,
+            f"app.py raised on first render: {[e.value for e in at.exception]}",
+        )
+        # The uploader is the entry point; without it there is no way in.
+        self.assertTrue(at.markdown, "app rendered no markdown at all")
+
+
+class TestMixedTableAndReport(unittest.TestCase):
+    """A ruled table on one page must not hide a report on another."""
+
+    def setUp(self):
+        self.tmp = make_test_dir()
+        self.cfg = load_config()
+        self.cfg["log_dir"] = self.tmp
+        self.logger = setup_logging(self.tmp)
+        self.pdf = os.path.join(self.tmp, "mixed.pdf")
+        create_table_then_report_pdf(self.pdf)
+
+    def tearDown(self):
+        close_logger(self.logger)
+        shutil.rmtree(self.tmp)
+
+    def test_report_page_is_read_despite_a_table_on_another_page(self):
+        processor = PDFProcessor(self.cfg, self.logger)
+        info = processor.classifier.classify(self.pdf)
+        datasets, _text = processor.extract_datasets(self.pdf, info)
+
+        # The report's rows must appear somewhere in the extracted datasets.
+        report_frames = [
+            ds["dataframe"] for ds in datasets
+            if "Order No" in list(ds["dataframe"].columns)
+        ]
+        self.assertTrue(
+            report_frames,
+            f"report page not read; datasets were {[d['name'] for d in datasets]}"
+        )
+        orders = set()
+        for frame in report_frames:
+            orders.update(frame["Order No"].astype(str))
+        self.assertIn("A1B2C3D4", orders)
+        self.assertIn("E5F6A7B8", orders)
+
+    def test_both_pages_reach_the_workbook(self):
+        out = os.path.join(self.tmp, "mixed.xlsx")
+        result = PDFProcessor(self.cfg, self.logger).process(self.pdf, out)
+        self.assertTrue(result["success"], result)
+        self.assertGreaterEqual(result["rows_extracted"], 2)
 
 
 class TestCsvExport(unittest.TestCase):

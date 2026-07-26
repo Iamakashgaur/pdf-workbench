@@ -263,6 +263,7 @@ class PDFClassifier:
             result["type"] = "text"
             return result
 
+        doc = None
         try:
             doc = fitz.open(pdf_path)
             result["page_count"] = len(doc)
@@ -284,8 +285,6 @@ class PDFClassifier:
                         result["estimated_tables"] += 1
                 else:
                     result["scanned_pages"].append(page_num)
-
-            doc.close()
 
             tp = len(result["text_pages"])
             sp = len(result["scanned_pages"])
@@ -309,6 +308,15 @@ class PDFClassifier:
         except Exception as e:
             self.logger.error(f"Classification failed for '{pdf_path}': {e}")
             result["type"] = "text"  # fallback
+        finally:
+            # Closed here rather than at the end of the try: an exception part
+            # way through the page loop used to leak the open document, which
+            # on Windows leaves the file locked for the rest of the run.
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    pass
 
         return result
 
@@ -324,8 +332,19 @@ class OCRProcessor:
         self.config = config
         self.logger = logger
 
+        # Guarded on availability, not just on the setting. `pytesseract` is an
+        # optional import, so reading its attributes when the package is absent
+        # raised NameError here - before any conversion started, and only for
+        # users who had followed the README's advice to set tesseract_path.
         if config.get("tesseract_path"):
-            pytesseract.pytesseract.tesseract_cmd = config["tesseract_path"]
+            if TESSERACT_AVAILABLE:
+                pytesseract.pytesseract.tesseract_cmd = config["tesseract_path"]
+            else:
+                self.logger.warning(
+                    "tesseract_path is set in config but pytesseract is not "
+                    "installed, so scanned pages will be skipped. "
+                    "Install it with: pip install pytesseract"
+                )
 
     def page_to_image(
         self, pdf_path: str, page_num: int,
@@ -1338,7 +1357,16 @@ class ExcelBuilder:
             return None
 
         normalized_col = col_name.strip().lower()
-        if normalized_col in {"order no", "certificate no", "s. no.", "customer name",
+
+        # A serial number is a counter, so it stays numeric: Excel then sorts it
+        # as a number and stops flagging "number stored as text" on the column.
+        # Every other name below is an identifier or free text that Excel must
+        # not reinterpret as a number or a date.
+        if normalized_col == "s. no.":
+            text = str(value).strip()
+            return int(text) if text.isdigit() else text
+
+        if normalized_col in {"order no", "certificate no", "customer name",
                               "item", "product type", "manufacturer", "est shipping date"}:
             return str(value).strip()
 
@@ -1377,8 +1405,11 @@ class ExcelBuilder:
             col_letter = get_column_letter(col_idx)
             # Measure header
             max_len = len(str(col_name))
-            # Sample up to 100 rows for performance
-            sample = df.iloc[:100][col_name].astype(str)
+            # Sample up to 100 rows for performance. Selected by position, not
+            # by label: a promoted header row can produce duplicate column
+            # names, and label lookup then returns a DataFrame instead of a
+            # Series, so `.str` raised and failed the whole file.
+            sample = df.iloc[:100, col_idx - 1].astype(str)
             if not sample.empty:
                 max_len = max(max_len, sample.str.len().max())
             ws.column_dimensions[col_letter].width = min(
@@ -1469,10 +1500,19 @@ class PDFProcessor:
                         "dataframe": item["dataframe"],
                     })
 
-            # No ruled grid anywhere: fall through to the text path, which is
-            # where the column parser reads order reports.
-            if not tables:
-                text_data = self.text_extractor.extract(pdf_path, info["text_pages"])
+            # Pages the table engines could not read fall through to the text
+            # path, which is where the column parser reads order reports.
+            #
+            # This used to be all-or-nothing: any table found anywhere skipped
+            # the text path for the whole document. One incidental ruled table
+            # on page 1 was therefore enough to stop an order report on page 2
+            # from ever being read - and to silence its excluded-row accounting
+            # along with it.
+            pages_with_tables = {item["page"] - 1 for item in tables}
+            remaining = [p for p in info["text_pages"] if p not in pages_with_tables]
+
+            if remaining:
+                text_data = self.text_extractor.extract(pdf_path, remaining)
                 combined_df = self._combine_text_dataframes(text_data)
                 if combined_df is not None and not combined_df.empty:
                     datasets.append({

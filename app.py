@@ -447,7 +447,23 @@ def ledger_html(header, rows, total_rows) -> str:
 
 
 cfg = load_config()
-logger = setup_logging(cfg.get("log_dir", "logs"))
+
+
+@st.cache_resource
+def get_logger(log_dir: str):
+    """One log file per server run, not one per script rerun.
+
+    Streamlit re-executes this module top to bottom on every widget
+    interaction, and setup_logging() mints a fresh timestamped file on each
+    call. That littered logs/ with near-empty files and, worse, split a single
+    conversion's records across several of them - so "check the newest log"
+    could point at the wrong file. Caching the resource pins one logger for the
+    life of the server.
+    """
+    return setup_logging(log_dir)
+
+
+logger = get_logger(cfg.get("log_dir", "logs"))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MASTHEAD
@@ -621,14 +637,28 @@ if not result["success"]:
 unparsed = result.get("unparsed_rows", 0)
 rows_out = result.get("rows_extracted", 0)
 
-sheets = [s for s in load_workbook(xlsx, read_only=True).sheetnames if not s.startswith("_")]
-header, rows, total_rows, amount_sum = ([], [], 0, 0.0)
-if sheets:
+_wb = load_workbook(xlsx, read_only=True)
+try:
+    sheets = [s for s in _wb.sheetnames if not s.startswith("_")]
+finally:
+    # read_only leaves a file handle open, which locks the file on Windows.
+    _wb.close()
+
+# Reconcile against *every* data sheet, not just the first. A workbook split
+# across several sheets otherwise compared the invoice's stated total against a
+# fraction of the extraction and reported a shortfall that did not exist.
+header, rows, first_total = [], [], 0
+total_rows, amount_sum = 0, 0.0
+for _idx, _name in enumerate(sheets):
     try:
-        header, rows, total_rows, amount_sum = read_sheet(
-            xlsx, sheets[0], preview_rows or 12)
+        _h, _r, _t, _a = read_sheet(
+            xlsx, _name, (preview_rows or 12) if _idx == 0 else 0)
     except Exception:
-        pass
+        continue
+    if _idx == 0:
+        header, rows, first_total = _h, _r, _t
+    total_rows += _t
+    amount_sum += _a
 
 reconciles = bool(stated) and stated[0] == total_rows and abs(amount_sum - stated[1]) < 0.005
 if unparsed:
@@ -700,12 +730,16 @@ with open(xlsx, "rb") as fh:
     )
 
 if preview_rows and header:
+    # Preview state is kept separate from the reconciliation totals above, which
+    # span every sheet. Reusing those variables here made the chosen sheet's row
+    # count overwrite the figure the verdict was computed from.
     sel = sheets[0]
+    sel_header, sel_rows, sel_total = header, rows, first_total
     if len(sheets) > 1:
         sel = st.selectbox("Sheet", sheets)
         try:
-            header, rows, total_rows, _ = read_sheet(xlsx, sel, preview_rows)
+            sel_header, sel_rows, sel_total, _ = read_sheet(xlsx, sel, preview_rows)
         except Exception:
             pass
     st.markdown(f'<h2 class="app-h2">{esc(sel)}</h2>', unsafe_allow_html=True)
-    st.markdown(ledger_html(header, rows, total_rows), unsafe_allow_html=True)
+    st.markdown(ledger_html(sel_header, sel_rows, sel_total), unsafe_allow_html=True)
