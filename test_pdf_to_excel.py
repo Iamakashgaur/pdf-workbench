@@ -5,8 +5,10 @@ Generates synthetic test PDFs and validates output Excel files.
 """
 
 import os
+import re
 import sys
 import json
+import argparse
 import logging
 import unittest
 import tempfile
@@ -266,6 +268,123 @@ class TestDependencies(unittest.TestCase):
         deps = check_dependencies()
         self.assertTrue(deps["pandas"], "pandas must be installed")
         self.assertTrue(deps["openpyxl"], "openpyxl must be installed")
+
+
+class TestDocsMatchCode(unittest.TestCase):
+    """The README is the single reference surface, so it must not go stale.
+
+    index.html used to restate the CLI flags, the config keys, installation and
+    troubleshooting in full - roughly 720 duplicated lines that had to be edited
+    in step with the README and, predictably, did not stay in step. It now links
+    here instead. That removes one copy; these tests stop the remaining one from
+    drifting away from the code it describes.
+    """
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(cls.ROOT, "README.md"), encoding="utf-8") as fh:
+            cls.readme = fh.read()
+
+    def _read(self, name: str) -> str:
+        with open(os.path.join(self.ROOT, name), encoding="utf-8") as fh:
+            return fh.read()
+
+    # ── CLI ──────────────────────────────────────────────────────────────
+    def test_every_cli_flag_is_documented(self):
+        from pdf_to_excel import build_parser
+
+        flags = {
+            opt
+            for action in build_parser()._actions
+            # argparse supplies --help itself and the usage line already shows
+            # -h; documenting it separately would be noise.
+            if not isinstance(action, argparse._HelpAction)
+            for opt in action.option_strings
+            if opt.startswith("--")
+        }
+        missing = sorted(f for f in flags if f not in self.readme)
+        self.assertEqual(
+            missing, [],
+            f"CLI flags exist in build_parser() but are absent from README.md: {missing}"
+        )
+
+    def test_readme_documents_no_flag_that_does_not_exist(self):
+        from pdf_to_excel import build_parser
+
+        real = {
+            opt
+            for action in build_parser()._actions
+            for opt in action.option_strings
+        }
+        # Scoped to the fenced usage block so ordinary prose cannot trip it.
+        block = re.search(
+            r"## CLI Reference\s*```(.*?)```", self.readme, re.S
+        )
+        self.assertIsNotNone(block, "README.md has no fenced CLI Reference block")
+        documented = set(re.findall(r"--[a-z][a-z0-9-]*", block.group(1)))
+        phantom = sorted(documented - real)
+        self.assertEqual(
+            phantom, [],
+            f"README.md documents flags the parser does not define: {phantom}"
+        )
+
+    # ── Configuration ────────────────────────────────────────────────────
+    def test_every_config_key_is_documented(self):
+        from pdf_to_excel import DEFAULT_CONFIG
+
+        missing = sorted(k for k in DEFAULT_CONFIG if k not in self.readme)
+        self.assertEqual(
+            missing, [],
+            f"config keys in DEFAULT_CONFIG but undocumented in README.md: {missing}"
+        )
+
+    def test_shipped_config_defines_no_unknown_keys(self):
+        from pdf_to_excel import DEFAULT_CONFIG
+
+        shipped = json.loads(self._read("config.json"))
+        # Keys prefixed with _ are commentary, not settings.
+        unknown = sorted(
+            k for k in shipped
+            if not k.startswith("_") and k not in DEFAULT_CONFIG
+        )
+        self.assertEqual(
+            unknown, [],
+            f"config.json sets keys the code never reads: {unknown}"
+        )
+
+    # ── The consolidation itself ─────────────────────────────────────────
+    def test_index_html_points_at_the_readme_instead_of_copying_it(self):
+        html = self._read("index.html")
+        for duplicated in ('id="install"', 'id="usage"', 'id="cli"',
+                           'id="config"', 'id="output"', 'id="troubleshoot"'):
+            self.assertNotIn(
+                duplicated, html,
+                f"index.html has re-grown a section that duplicates the README "
+                f"({duplicated}). Reference material belongs in README.md."
+            )
+        self.assertIn('id="reference"', html)
+        self.assertIn("README.md", html)
+
+    def test_stated_test_count_is_accurate(self):
+        # Both README.md and PRODUCT.md advertise this number, and it has gone
+        # stale twice. It is a claim made to anyone reading the repo.
+        actual = unittest.TestLoader().loadTestsFromModule(
+            sys.modules[__name__]
+        ).countTestCases()
+
+        for name in ("README.md", "PRODUCT.md"):
+            stated = set(re.findall(r"(\d+)\s+(?:tests|%20passing)", self._read(name)))
+            stated |= set(re.findall(r"tests-(\d+)%20passing", self._read(name)))
+            self.assertTrue(
+                stated, f"{name} states no test count"
+            )
+            self.assertEqual(
+                stated, {str(actual)},
+                f"{name} states test count {sorted(stated)} but the suite has "
+                f"{actual}. Update the number in README.md and PRODUCT.md."
+            )
 
 
 class TestConfig(unittest.TestCase):

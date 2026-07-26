@@ -42,7 +42,10 @@ for rather than approximately captured.
 - Windows desktop. Launched by double-clicking `convert.bat`, which starts a
   local Streamlit server and opens the browser. Not deployed or public.
 - Two surfaces: the **converter app** (`app.py`, the daily tool) and a
-  **standalone reference page** (`index.html`, opened directly from disk).
+  **standalone overview page** (`index.html`, opened directly from disk). The
+  overview explains the pipeline and how order reports are read, then points at
+  `README.md` for reference detail — installation, flags, config keys and
+  troubleshooting live in the README alone, so the two cannot drift apart.
 - Input arrives as one PDF at a time, or a folder for batch runs.
 - Reports state their own totals in a header line (`25 Items - $5970.06`),
   which is the team's fastest reconciliation check.
@@ -84,7 +87,7 @@ expressive direction.
 
 - Verified against six live supplier invoices: **100 of 100 line items
   extracted, reconciling to the cent** ($91,948.90 across the six).
-- Automated test suite: 59 tests, all passing.
+- Automated test suite: 65 tests, all passing.
 - Real invoice PDFs exist locally but are **not** in the repository, and
   generated workbooks are git-ignored because they carry customer data.
 - No public customers, testimonials, benchmarks or pricing exist. Do not invent
