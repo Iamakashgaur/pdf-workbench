@@ -13,7 +13,7 @@ reconciling to the cent ($91,948.90).**
 
 ![The converter reconciling an extracted report against the invoice's own stated total](docs/demo.png)
 
-<sub>The web UI after a conversion. It reads the invoice's own `8 Items - $19,824.50`
+<sub>The whole flow, top to bottom. It reads the invoice's own `8 Items - $19,824.50`
 header line, sums what it actually extracted, and leads with the difference — `$0.00`
 here — so you can see the file is complete before you download it. Rows 4 and 7 are
 settings with **no certificate at all**, which the column parser handles as an empty
