@@ -803,6 +803,11 @@ class ReportColumnParser:
 
     # ── main entry ───────────────────────────────────────────
     def parse_page(self, page: Any) -> Optional[List[Dict[str, str]]]:
+        # Cleared here rather than beside the row loop below: every early return
+        # in between would otherwise leave the previous page's lines in place,
+        # and the caller reads this list after the call.
+        self.unparsed_lines = []
+
         try:
             words = page.extract_words()
         except Exception as e:
@@ -827,7 +832,6 @@ class ReportColumnParser:
         bounds = self._boundaries(anchors, body)
         names = [n for n, _ in self.COLUMNS]
 
-        self.unparsed_lines = []
         rows: List[Dict[str, str]] = []
         for ln in body:
             text = " ".join(w["text"] for w in ln).strip()
@@ -942,11 +946,18 @@ class TextExtractor:
                     })
                     continue
 
+                # An empty (rather than None) frame means the layout was read and
+                # every row it held has already been reported as excluded, so the
+                # report text parser must not run over this page a second time.
+                layout_was_read = df is not None
+
                 if text:
                     results.append({
                         "page": page_num + 1,
                         "text": text,
-                        "dataframe": self._text_to_dataframe(text)
+                        "dataframe": self._text_to_dataframe(
+                            text, parse_report=not layout_was_read
+                        )
                     })
 
         if self.dropped_rows:
@@ -957,7 +968,18 @@ class TextExtractor:
         return results
 
     def _report_by_columns(self, pdf: Optional[Any], page_num: int) -> Optional[pd.DataFrame]:
-        """Parse a report page positionally, validating each row before keeping it."""
+        """Parse a report page positionally, validating each row before keeping it.
+
+        The return value carries two outcomes the caller must treat differently:
+
+        * ``None`` - the page's column layout could not be read at all, so the
+          caller falls back to parsing the flattened text.
+        * an **empty** DataFrame - the layout *was* read, but no row survived
+          validation. Every exclusion has already been reported by this method,
+          so the caller must not re-run the report text parser over the same
+          page. Doing so counted each excluded row twice, inflating the figure
+          shown in the metadata sheet and the batch summary.
+        """
         if pdf is None:
             return None
         try:
@@ -972,7 +994,9 @@ class TextExtractor:
             self.logger.debug(f"Column parse failed on page {page_num+1}: {e}")
             return None
 
-        if not rows:
+        # None means no readable header; [] means a header with an empty body,
+        # which is still a layout this parser understood.
+        if rows is None:
             return None
 
         kept = []
@@ -985,20 +1009,22 @@ class TextExtractor:
                     " ".join(f"{k}={v}" for k, v in row.items() if v)
                 )
 
-        if not kept:
-            return None
-
-        # The column layout was read successfully for this page, so the text
-        # fallback will not run for it. Any line the parser could attach to no
-        # row (an unrecognised footer, or a data row whose serial did not read)
-        # must be surfaced here, or it would vanish without a trace.
+        # Surfaced before the empty-result check below, not after it. A line the
+        # parser could attach to no row (an unrecognised footer, or a data row
+        # whose serial did not read) must be reported even on a page that yields
+        # nothing else - otherwise it vanishes without a trace, which is the one
+        # outcome this product does not accept.
         for line in self.column_parser.unparsed_lines:
             self._note_dropped_row(line)
+
+        columns = [n for n, _ in ReportColumnParser.COLUMNS]
+        if not kept:
+            return pd.DataFrame(columns=columns)
 
         self.logger.info(
             f"Page {page_num+1}: read {len(kept)} report row(s) from column layout."
         )
-        return pd.DataFrame(kept, columns=[n for n, _ in ReportColumnParser.COLUMNS])
+        return pd.DataFrame(kept, columns=columns)
 
     @staticmethod
     def _row_is_complete(row: Dict[str, str]) -> bool:
@@ -1052,15 +1078,23 @@ class TextExtractor:
             if own is not None:
                 own.close()
 
-    def _text_to_dataframe(self, text: str) -> pd.DataFrame:
-        """Convert raw text to DataFrame, trying to detect structure."""
+    def _text_to_dataframe(
+        self, text: str, parse_report: bool = True
+    ) -> pd.DataFrame:
+        """Convert raw text to DataFrame, trying to detect structure.
+
+        `parse_report=False` skips the order-report pass for a page the column
+        parser already read and already reported on, so its excluded rows are
+        not counted a second time here.
+        """
         lines = [l.strip() for l in text.split("\n") if l.strip()]
         if not lines:
             return pd.DataFrame()
 
-        report_df = self._parse_order_report(lines)
-        if not report_df.empty:
-            return report_df
+        if parse_report:
+            report_df = self._parse_order_report(lines)
+            if not report_df.empty:
+                return report_df
 
         # Detect delimiter-separated structure
         for delimiter in ["\t", "|", ",", "  "]:
@@ -1396,6 +1430,103 @@ class PDFProcessor:
         self.text_extractor = TextExtractor(logger)
         self.ocr = OCRProcessor(config, logger)
 
+    def extract_datasets(
+        self, pdf_path: str, info: Dict[str, Any], preview: bool = False
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
+        """Run the full extraction cascade once and return everything it found.
+
+        Returns ``(datasets, text_blocks)``, where a dataset is
+        ``{"name", "title", "dataframe"}`` and a text block is
+        ``{"name", "text"}`` for a page that yielded no tabular data.
+
+        This is the single source of truth for what a PDF contains; the Excel
+        writer and the CSV exporter are both consumers of it. They used to carry
+        separate cascades, and the CSV one covered only the table engines - so
+        order reports, which are read further down the cascade by the column
+        parser, exported nothing at all.
+        """
+        # Per-document state: this processor is reused across a batch run.
+        self.text_extractor.dropped_rows = []
+
+        datasets: List[Dict[str, Any]] = []
+        text_blocks: List[Dict[str, str]] = []
+
+        # ──────────────── Text pages ────────────────────────────────────────
+        if info["text_pages"]:
+            tables = self.table_extractor.extract(pdf_path, info["text_pages"])
+            combined_tables_df = self._combine_extracted_tables(tables)
+            if combined_tables_df is not None and not combined_tables_df.empty:
+                datasets.append({
+                    "name": "Table_Data",
+                    "title": "Extracted Table Data",
+                    "dataframe": combined_tables_df,
+                })
+            else:
+                for item in tables:
+                    datasets.append({
+                        "name": f"P{item['page']}_T{item['table_index']}",
+                        "title": f"Page {item['page']} - Table {item['table_index']}",
+                        "dataframe": item["dataframe"],
+                    })
+
+            # No ruled grid anywhere: fall through to the text path, which is
+            # where the column parser reads order reports.
+            if not tables:
+                text_data = self.text_extractor.extract(pdf_path, info["text_pages"])
+                combined_df = self._combine_text_dataframes(text_data)
+                if combined_df is not None and not combined_df.empty:
+                    datasets.append({
+                        "name": "Text_Data",
+                        "title": "Extracted Text Data",
+                        "dataframe": combined_df,
+                    })
+                else:
+                    for item in text_data:
+                        name = f"P{item['page']}_Text"
+                        df = item.get("dataframe")
+                        if df is not None and not df.empty:
+                            datasets.append({
+                                "name": name,
+                                "title": f"Page {item['page']} - Text",
+                                "dataframe": df,
+                            })
+                        else:
+                            text_blocks.append({"name": name, "text": item["text"]})
+
+        # ──────────────── Scanned pages ──────── OCR ────────────────────────
+        if info["scanned_pages"]:
+            if not TESSERACT_AVAILABLE:
+                self.logger.warning(
+                    "Scanned pages found but pytesseract not available. "
+                    "Install tesseract-ocr and pytesseract."
+                )
+            # One open document for the whole OCR loop instead of one per page.
+            with _PDFHandles(pdf_path, self.logger) as ocr_handles:
+                for page_num in info["scanned_pages"]:
+                    img = self.ocr.page_to_image(pdf_path, page_num, ocr_handles)
+                    if img is None:
+                        continue
+                    df = self.ocr.extract_table_data(img)
+                    if df is not None and not df.empty:
+                        datasets.append({
+                            "name": f"P{page_num+1}_OCR",
+                            "title": f"Page {page_num+1} - OCR",
+                            "dataframe": df,
+                        })
+                    else:
+                        text = self.ocr.extract_text(img)
+                        if text.strip():
+                            text_blocks.append({
+                                "name": f"P{page_num+1}_OCR_Text",
+                                "text": text,
+                            })
+
+        if preview:
+            for ds in datasets:
+                _preview_dataframe(ds["dataframe"], ds["name"])
+
+        return datasets, text_blocks
+
     def process(
         self, pdf_path: str, output_path: str,
         preview: bool = False
@@ -1414,8 +1545,7 @@ class PDFProcessor:
         }
 
         start = datetime.now()
-        # Reset per-document state: this processor is reused across a batch.
-        self.text_extractor.dropped_rows = []
+        # Per-document state is reset by extract_datasets(), which owns it.
 
         if not os.path.exists(pdf_path):
             result["error"] = "File not found"
@@ -1434,95 +1564,32 @@ class PDFProcessor:
                 return result
 
             builder = ExcelBuilder(self.config, self.logger)
+
+            datasets, text_blocks = self.extract_datasets(
+                pdf_path, info, preview=preview
+            )
+
             # Two distinct measures: how many tabular datasets were written,
             # and how many data rows they hold. Conflating them made a 95-row
             # consolidated report display as "95 tables".
-            tables_found = 0
-            rows_extracted = 0
+            tables_found = len(datasets)
+            rows_extracted = sum(len(ds["dataframe"]) for ds in datasets)
 
-            # ──────────────── Text pages ────────────────────────────────────────────────────────────
-            if info["text_pages"]:
-                tables = self.table_extractor.extract(pdf_path, info["text_pages"])
-                combined_tables_df = self._combine_extracted_tables(tables)
-                if combined_tables_df is not None and not combined_tables_df.empty:
-                    if preview:
-                        _preview_dataframe(combined_tables_df, "Table_Data")
-                    builder.add_dataframe(combined_tables_df, "Table_Data", title="Extracted Table Data")
-                    # One consolidated table, however many rows it holds.
-                    tables_found += 1
-                    rows_extracted += len(combined_tables_df)
-                else:
-                    for item in tables:
-                        sheet = f"P{item['page']}_T{item['table_index']}"
-                        df = item["dataframe"]
-                        if preview:
-                            _preview_dataframe(df, sheet)
-                        builder.add_dataframe(
-                            df,
-                            sheet,
-                            title=f"Page {item['page']} - Table {item['table_index']}"
-                        )
-                        tables_found += 1
-                        rows_extracted += len(df)
+            for ds in datasets:
+                builder.add_dataframe(ds["dataframe"], ds["name"], title=ds["title"])
+            for block in text_blocks:
+                builder.add_text_sheet(block["text"], block["name"])
 
-                # If no tables found on text pages, extract raw text
-                if not tables:
-                    text_data = self.text_extractor.extract(pdf_path, info["text_pages"])
-                    combined_df = self._combine_text_dataframes(text_data)
-                    if combined_df is not None and not combined_df.empty:
-                        if preview:
-                            _preview_dataframe(combined_df, "Text_Data")
-                        builder.add_dataframe(combined_df, "Text_Data", title="Extracted Text Data")
-                        # Order reports land here when the table engines
-                        # find nothing; these rows used to go uncounted entirely.
-                        tables_found += 1
-                        rows_extracted += len(combined_df)
-                    else:
-                        for item in text_data:
-                            sheet = f"P{item['page']}_Text"
-                            df = item.get("dataframe")
-                            if df is not None and not df.empty:
-                                if preview:
-                                    _preview_dataframe(df, sheet)
-                                builder.add_dataframe(
-                                    df,
-                                    sheet,
-                                    title=f"Page {item['page']} - Text"
-                                )
-                                tables_found += 1
-                                rows_extracted += len(df)
-                            else:
-                                builder.add_text_sheet(item["text"], sheet)
-
-            # ──────────────── Scanned pages ──────── OCR ────────────────────────────────────────────────────────────
-            if info["scanned_pages"]:
-                if not TESSERACT_AVAILABLE:
-                    self.logger.warning(
-                        "Scanned pages found but pytesseract not available. "
-                        "Install tesseract-ocr and pytesseract."
-                    )
-                # One open document for the whole OCR loop instead of one per page.
-                with _PDFHandles(pdf_path, self.logger) as ocr_handles:
-                    for page_num in info["scanned_pages"]:
-                        img = self.ocr.page_to_image(pdf_path, page_num, ocr_handles)
-                        if img is None:
-                            continue
-                        df = self.ocr.extract_table_data(img)
-                        if df is not None and not df.empty:
-                            sheet = f"P{page_num+1}_OCR"
-                            if preview:
-                                _preview_dataframe(df, sheet)
-                            builder.add_dataframe(
-                                df,
-                                sheet,
-                                title=f"Page {page_num+1} - OCR"
-                            )
-                            tables_found += 1
-                            rows_extracted += len(df)
-                        else:
-                            text = self.ocr.extract_text(img)
-                            if text.strip():
-                                builder.add_text_sheet(text, f"P{page_num+1}_OCR_Text")
+            # Last resort: nothing tabular and no text block was captured, so
+            # dump the raw page text rather than saving an empty workbook. This
+            # runs *before* the metadata sheet is added - adding metadata first
+            # made the sheet count non-zero, so this path could never fire.
+            if not builder.wb.sheetnames:
+                text_data = self.text_extractor.extract(
+                    pdf_path, list(range(info["page_count"]))
+                )
+                for item in text_data:
+                    builder.add_text_sheet(item["text"], f"P{item['page']}")
 
             # ──────────────── Metadata ────────────────────────────────────────────────────────────
             if self.config.get("add_metadata_sheet", True):
@@ -1542,18 +1609,12 @@ class PDFProcessor:
                 }
                 builder.add_metadata_sheet(meta)
 
+            # Recorded after every sheet has been added, so the counts describe
+            # the workbook that is actually written.
             result["sheets_created"] = len(builder.wb.sheetnames)
             result["tables_found"] = tables_found
             result["rows_extracted"] = rows_extracted
             result["unparsed_rows"] = len(self.text_extractor.dropped_rows)
-
-            if result["sheets_created"] == 0:
-                # Last resort: dump raw text
-                text_data = self.text_extractor.extract(
-                    pdf_path, list(range(info["page_count"]))
-                )
-                for item in text_data:
-                    builder.add_text_sheet(item["text"], f"P{item['page']}")
 
             saved = builder.save(output_path)
             result["success"] = saved
@@ -1630,9 +1691,14 @@ class BatchProcessor:
         self, input_dir: str, output_dir: str,
         preview: bool = False
     ) -> List[Dict]:
-        pdfs = sorted(Path(input_dir).glob("**/*.pdf"))
-        pdfs += sorted(Path(input_dir).glob("**/*.PDF"))
-        pdfs = list(set(pdfs))  # deduplicate
+        # Deduplicate (a case-insensitive filesystem matches both globs against
+        # the same file) then re-sort, so the processing order is deterministic
+        # rather than whatever order the intermediate set happened to produce.
+        pdfs = sorted({
+            p.resolve()
+            for p in list(Path(input_dir).glob("**/*.pdf"))
+            + list(Path(input_dir).glob("**/*.PDF"))
+        })
 
         if not pdfs:
             _print("No PDF files found in: " + input_dir)
@@ -1640,6 +1706,7 @@ class BatchProcessor:
 
         os.makedirs(output_dir, exist_ok=True)
         results = []
+        taken: Dict[str, Path] = {}
 
         if RICH_AVAILABLE:
             with Progress(
@@ -1651,10 +1718,7 @@ class BatchProcessor:
             ) as progress:
                 task = progress.add_task("Processing PDFs...", total=len(pdfs))
                 for pdf in pdfs:
-                    out = os.path.join(
-                        output_dir,
-                        pdf.stem + "_" + datetime.now().strftime("%Y%m%d") + ".xlsx"
-                    )
+                    out = self._reserve_output_path(pdf, output_dir, taken)
                     progress.update(task, description=f"[bold blue]{pdf.name}")
                     r = self.processor.process(str(pdf), out, preview=preview)
                     results.append(r)
@@ -1662,10 +1726,7 @@ class BatchProcessor:
         else:
             for i, pdf in enumerate(pdfs, 1):
                 print(f"[{i}/{len(pdfs)}] Processing: {pdf.name}")
-                out = os.path.join(
-                    output_dir,
-                    pdf.stem + "_" + datetime.now().strftime("%Y%m%d") + ".xlsx"
-                )
+                out = self._reserve_output_path(pdf, output_dir, taken)
                 r = self.processor.process(str(pdf), out, preview=preview)
                 results.append(r)
                 status = "OK" if r["success"] else f"FAIL: {r['error']}"
@@ -1675,6 +1736,36 @@ class BatchProcessor:
             self._write_summary_report(results, output_dir)
 
         return results
+
+    def _reserve_output_path(
+        self, pdf: Path, output_dir: str, taken: Dict[str, Path]
+    ) -> str:
+        """Claim an output name no other file in this run is using.
+
+        Batch mode recurses subdirectories, so two different PDFs can share a
+        stem - "jan/orders.pdf" and "feb/orders.pdf". Naming the output from the
+        stem alone made the second overwrite the first while the batch summary
+        reported both as succeeded: an entire converted workbook lost with no
+        indication that anything had happened.
+
+        Uniqueness is scoped to the run. Re-running a batch still refreshes the
+        previous run's workbooks, which is the expected behaviour; only a clash
+        *within* one run is a defect.
+        """
+        base = f"{pdf.stem}_{datetime.now().strftime('%Y%m%d')}"
+        name, counter = base, 1
+        while name in taken:
+            counter += 1
+            name = f"{base}_{counter}"
+
+        if counter > 1:
+            self.logger.warning(
+                f"Output name '{base}.xlsx' was already claimed by "
+                f"'{taken[base]}'; writing '{pdf}' to '{name}.xlsx' instead."
+            )
+
+        taken[name] = pdf
+        return os.path.join(output_dir, f"{name}.xlsx")
 
     def _write_summary_report(self, results: List[Dict], output_dir: str) -> None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1817,25 +1908,39 @@ def print_dependency_status() -> None:
 
 def export_to_csv(
     pdf_path: str, output_dir: str, config: dict, logger: logging.Logger
-) -> List[str]:
-    """Extract tables and save each as a separate CSV."""
+) -> Dict[str, Any]:
+    """Extract every dataset in a PDF and save each as a separate CSV.
+
+    Returns ``{"files": [paths], "unparsed_rows": int}``.
+
+    This runs the same cascade as the Excel path via
+    `PDFProcessor.extract_datasets`. It previously called `TableExtractor`
+    directly, which meant it saw only what the table engines found: order
+    reports produce no ruled grid and are read further down the cascade by the
+    column parser, so exporting one as CSV silently produced no files at all.
+    Sharing the cascade also means CSV runs now cover scanned pages via OCR,
+    and can report excluded rows - which the caller must surface, because a
+    partial export that looks complete is the one outcome this tool rejects.
+    """
     processor = PDFProcessor(config, logger)
-    info = PDFClassifier(logger).classify(pdf_path)
-    extractor = TableExtractor(config, logger)
+    info = processor.classifier.classify(pdf_path)
+    datasets, _text_blocks = processor.extract_datasets(pdf_path, info)
 
     os.makedirs(output_dir, exist_ok=True)
-    all_pages = info["text_pages"] + info["scanned_pages"]
-    tables = extractor.extract(pdf_path, all_pages)
+    stem = Path(pdf_path).stem
 
     saved = []
-    for item in tables:
-        stem = Path(pdf_path).stem
-        fname = f"{stem}_P{item['page']}_T{item['table_index']}.csv"
-        fpath = os.path.join(output_dir, fname)
-        item["dataframe"].to_csv(fpath, index=False, encoding="utf-8-sig")
+    for ds in datasets:
+        # Named for the dataset, so a CSV file and the equivalent Excel sheet
+        # carry the same name.
+        fpath = os.path.join(output_dir, f"{stem}_{ds['name']}.csv")
+        ds["dataframe"].to_csv(fpath, index=False, encoding="utf-8-sig")
         saved.append(fpath)
 
-    return saved
+    return {
+        "files": saved,
+        "unparsed_rows": len(processor.text_extractor.dropped_rows),
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1860,8 +1965,8 @@ Examples:
   # Use specific config
   python pdf_to_excel.py report.pdf --config my_config.json
 
-  # Launch GUI
-  python -m streamlit run pdf_to_excel.py --server.headless true -- --gui
+  # Launch the web UI (it lives in app.py, not here)
+  streamlit run app.py
 
   # Check dependencies
   python pdf_to_excel.py --check-deps
@@ -1888,7 +1993,8 @@ Examples:
     p.add_argument("--keep-empty", action="store_true",
                    help="Keep empty rows and columns")
     p.add_argument("--gui", action="store_true",
-                   help="Launch Streamlit GUI")
+                   help="Print the command that launches the web UI, and exit "
+                        "(the UI lives in app.py; this does not start it)")
     p.add_argument("--check-deps", action="store_true",
                    help="Print dependency status and exit")
     return p
@@ -1948,11 +2054,19 @@ def main() -> int:
 
     if args.format == "csv":
         output_dir = args.output or os.path.join(cfg.get("output_dir", "output"), stem)
-        saved = export_to_csv(pdf_path, output_dir, cfg, logger)
+        export = export_to_csv(pdf_path, output_dir, cfg, logger)
+        saved = export["files"]
         if saved:
-            _print(f"Exported {len(saved)} CSV files to: {output_dir}")
+            _print(f"Exported {len(saved)} CSV file(s) to: {output_dir}")
         else:
-            _print("No tables found to export as CSV.")
+            _print("No data found to export as CSV.")
+        if export["unparsed_rows"]:
+            warn = (
+                f"Warning: {export['unparsed_rows']} report row(s) did not match the "
+                f"expected format and were excluded from the export. "
+                f"The offending lines are listed in the log file."
+            )
+            _print(f"[yellow]{warn}[/yellow]" if RICH_AVAILABLE else warn)
         return 0
 
     output_path = args.output or os.path.join(

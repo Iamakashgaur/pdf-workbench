@@ -781,7 +781,7 @@ python pdf_to_excel.py <span class="flag">-d</span> ./invoices/ <span class="fla
     <div class="tab-panel" id="tab-csv">
       <div class="code-block">
         <div class="code-header"><span class="code-lang">bash</span><button class="copy-btn" data-copy="python pdf_to_excel.py data.pdf --format csv">Copy</button></div>
-        <pre><span class="comment"># Export each table as a separate CSV</span>
+        <pre><span class="comment"># Export each dataset as a separate CSV</span>
 python pdf_to_excel.py data.pdf <span class="flag">--format</span> csv</pre>
       </div>
       <div class="code-block">
@@ -789,7 +789,7 @@ python pdf_to_excel.py data.pdf <span class="flag">--format</span> csv</pre>
         <pre><span class="comment"># CSV with custom output folder</span>
 python pdf_to_excel.py data.pdf <span class="flag">--format</span> csv <span class="flag">-o</span> ./csv_output/</pre>
       </div>
-      <div style="padding: 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-panel); font-size: 0.82rem; color: var(--text-3); margin-top: 0.5rem;">Each table becomes a separate CSV: <code style="font-family:var(--mono);color:var(--ok);background:var(--bg);padding:0.1rem 0.35rem;border-radius:4px;">filename_P1_T1.csv</code>, <code style="font-family:var(--mono);color:var(--ok);background:var(--bg);padding:0.1rem 0.35rem;border-radius:4px;">filename_P1_T2.csv</code>, etc.
+      <div style="padding: 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-panel); font-size: 0.82rem; color: var(--text-3); margin-top: 0.5rem;">Each dataset becomes a separate CSV, named after the sheet the Excel path would have written: <code style="font-family:var(--mono);color:var(--ok);background:var(--bg);padding:0.1rem 0.35rem;border-radius:4px;">filename_Text_Data.csv</code>, <code style="font-family:var(--mono);color:var(--ok);background:var(--bg);padding:0.1rem 0.35rem;border-radius:4px;">filename_P1_T1.csv</code>, etc. CSV runs use the same extraction cascade as Excel, so they cover order reports and scanned pages and report excluded rows the same way.
       </div>
     </div>
 
@@ -917,10 +917,10 @@ convert.bat</pre>
       <p style="font-size:0.8rem;color:var(--text-3);margin-bottom:0.75rem;font-family:var(--mono);">CSV export</p>
       <div class="file-tree">
         <div><span class="tree-root">csv_output/</span></div>
+        <div class="indent1"><span class="tree-file">report_Text_Data.csv</span></div>
         <div class="indent1"><span class="tree-file">data_P1_T1.csv</span></div>
-        <div class="indent1"><span class="tree-file">data_P1_T2.csv</span></div>
-        <div class="indent1"><span class="tree-file">data_P2_T1.csv</span></div>
-        <div class="indent2"><span class="tree-comment">← one CSV per table</span></div>
+        <div class="indent1"><span class="tree-file">data_P2_OCR.csv</span></div>
+        <div class="indent2"><span class="tree-comment">← one CSV per dataset</span></div>
       </div>
     </div>
   </div>

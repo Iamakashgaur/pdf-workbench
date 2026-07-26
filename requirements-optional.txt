@@ -1,4 +1,4 @@
-# PDF to Excel Converter – Optional extraction engines
+# PDF to Excel Converter - Optional extraction engines
 #
 #   pip install -r requirements-optional.txt
 #
@@ -9,15 +9,17 @@
 #
 # The tool checks at import whether each is available and skips it if not.
 # Run `python pdf_to_excel.py --check-deps` to see the current status.
+#
+# Pure ASCII on purpose - see the note at the top of requirements.txt.
 
-# ── Camelot – lattice/stream table detection ──────────────────────────────────
+# -- Camelot - lattice/stream table detection ---------------------------------
 # Best on tables with visible ruling lines. Requires Ghostscript:
 #   Windows : https://www.ghostscript.com/releases/gsdnld.html
 #   macOS   : brew install ghostscript
 #   Linux   : sudo apt-get install ghostscript
 camelot-py[cv]>=0.11.0
 
-# ── Tabula – Java-based extractor ─────────────────────────────────────────────
+# -- Tabula - Java-based extractor --------------------------------------------
 # Last-resort fallback; slower, but catches tables the others miss.
 # Requires Java 8+ on PATH: https://www.java.com/en/download/
 tabula-py>=2.9.0

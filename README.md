@@ -1,7 +1,99 @@
 # PDF to Excel Converter
 
-Convert **any** PDF — scanned, native text, mixed content — to a well-formatted `.xlsx` file.  
-Supports batch processing, OCR for scanned pages, auto table detection, and an optional Streamlit GUI.
+[![CI](https://github.com/Iamakashgaur/PDF-to-Excel-Converter/actions/workflows/ci.yml/badge.svg)](https://github.com/Iamakashgaur/PDF-to-Excel-Converter/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.13-blue)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-53%20passing-brightgreen)](test_pdf_to_excel.py)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)
+
+Turns supplier order reports from PDF into reconciled Excel workbooks — and tells you,
+every single time, whether anything was left behind.
+
+**Verified against six live supplier invoices: 100 of 100 line items extracted,
+reconciling to the cent ($91,948.90).**
+
+---
+
+## The problem I solved
+
+A back-office team received supplier order reports as PDFs and nothing else. Every line
+item — customer, stone, certificate, order number, amount, ship date — was **re-keyed into
+Excel by hand**. Slow, and quietly error-prone in the way manual transcription always is:
+you don't find the mistake, the mistake finds you, three weeks later, in a number someone
+already invoiced against.
+
+The obvious fix is a PDF-to-Excel converter. The obvious fix does not work here, for two
+reasons.
+
+**1. These reports have no table to find.** They carry no ruling lines, so grid-detection
+engines return nothing. What is left is flattened text, and pattern-matching that text
+breaks on every real-world case in the document:
+
+| In the document | What breaks |
+|---|---|
+| A stone description wraps onto the next line | The continuation looks like a new row |
+| A setting or mounting has **no certificate** | The field the pattern expects is simply absent |
+| A product type that isn't `Diamond` | The pattern has never heard of it |
+| A totals line — `95 Items - $94222.52` | Starts with digits, reads as a data row |
+
+**2. The dangerous failure is the quiet one.** A converter that drops four rows out of
+ninety-five produces a file that looks *exactly* like a correct one. It is worse than no
+tool at all, because it is trusted. For financial records, "mostly extracted" is not a
+partial success — it is a silent, undetectable corruption of the source of truth.
+
+So the real problem was never "parse a PDF". It was: **produce a spreadsheet the team can
+rely on without checking it against the PDF first.**
+
+## How I solved it
+
+**Read the geometry, not the text.** Every word in a PDF carries its physical position on
+the page. A value's *column* is a fact the file records; its *shape* is only a guess. So
+the parser assigns each word to whichever column it is physically printed under, and never
+asks what the value looks like.
+
+The subtlety is where a column actually ends. Header labels are centred over their columns
+while the data beneath is left-aligned, so the midpoint between two header labels lands
+*inside* real values. Instead, for each page the parser scans the gap between adjacent
+header anchors and splits at the **widest empty vertical strip in the printed data** —
+calibrating column boundaries from the document itself rather than hard-coded coordinates.
+
+Every case in the table above then stops being a special case:
+
+- A wrapped cell continues **under its own column**, so it merges into the right field.
+- A blank certificate is just an empty column — nothing has to account for a missing field.
+- Any product type reads fine, because the type is never required to be a specific word.
+- Footer lines carry no serial number, so they are excluded *structurally*, not by keyword.
+
+**Then refuse to fail silently.** Each row is validated before it is kept — it must carry a
+serial number, an amount, an order number and a shipping date. Rows that fail are excluded,
+and every exclusion is reported in **four places**: the console, the log file, the workbook's
+`_Metadata` sheet, and the batch summary. The web UI goes further and reconciles the
+extracted row count and amount total against the invoice's own `N Items - $X` header line,
+showing the difference at full metric scale before you download anything.
+
+The result is that downloading the file confirms something already visibly true, instead of
+being the moment you start hoping.
+
+## What I'd point at in a code review
+
+| | |
+|---|---|
+| **The core idea** | [`ReportColumnParser._boundaries`](pdf_to_excel.py) — column calibration from the widest empty strip. Roughly 30 lines, and the reason the whole thing works. |
+| **Design under constraint** | Three extraction engines tried in order, two of them optional and often absent. Availability is import-gated; missing engines degrade honestly instead of crashing. |
+| **A performance fix** | `_PDFHandles` opens each document once per run instead of once per page, using explicit sentinels — a zero-page PDF is falsy, so truthiness checks leaked handles. |
+| **A measurement bug worth the comment** | `Tables Found` and `Rows Extracted` are deliberately separate. Conflating them displayed a 95-row report as "95 tables". |
+| **Test strategy** | 53 tests. Synthetic PDFs via reportlab for the pipeline; hand-built word-position fixtures for the geometry parser, so column logic is tested without a PDF in the loop. |
+| **CI** | Ubuntu + Windows × Python 3.11/3.13, deliberately green *without* the optional engines installed. |
+
+## Known limitations
+
+Stated plainly, because a tool that oversells itself is the problem this one exists to fix.
+
+- The column parser targets **one specific report layout**. If those columns are
+  rearranged, it needs a code change — not a config change.
+- Password-protected PDFs are unsupported.
+- Scanned pages need Tesseract installed. Without it they are skipped and reported,
+  never silently dropped.
+- `java_path` in `config.json` is currently unused; put Java on `PATH` for tabula.
 
 ---
 
@@ -239,6 +331,23 @@ When every page yields the same columns, rows are combined into a **single sheet
 | `Table_Data` | A table engine (pdfplumber/camelot/tabula) found the grid — the usual path for ruled invoice tables |
 | `Text_Data` | No ruled grid was detected. Order reports land here and are read by the column parser |
 
+### Single PDF → CSV
+
+One CSV per dataset, named after the sheet the Excel path would have produced — so
+`Text_Data` in a workbook and `report_Text_Data.csv` on disk are the same data.
+
+```
+csv_output/
+├── report_Text_Data.csv     ← order report, read by the column parser
+├── data_P1_T1.csv           ← page 1, table 1 (ruled grid)
+└── data_P2_OCR.csv          ← page 2, scanned
+```
+
+CSV runs use the **same extraction cascade as Excel**, so they cover order reports and
+scanned pages, and report excluded rows the same way. (They did not always: the CSV path
+once called the table engines directly and silently produced nothing for a report with no
+ruled grid.)
+
 ### Batch → Output folder
 
 ```
@@ -249,6 +358,11 @@ output/
 └── _batch_summary_20240115_143022.xlsx   ← Success/fail, Rows Extracted
                                              and Unparsed Rows per file
 ```
+
+Batch mode recurses into subdirectories, so two source PDFs can share a filename. Outputs
+are **never overwritten within a run**: the second file to claim a name gets a `_2` suffix
+and a `WARNING` naming both source paths. Re-running a batch still refreshes the previous
+run's workbooks, which is the intended behaviour.
 
 ---
 
@@ -414,10 +528,10 @@ qpdf --linearize corrupted.pdf fixed.pdf
 
 ## Running Tests
 
-```bash
-# Install test dependency
-pip install reportlab
+`reportlab` builds the synthetic PDFs the suite converts; it is already in
+`requirements.txt`, so there is nothing extra to install.
 
+```bash
 # Run all tests
 python test_pdf_to_excel.py
 

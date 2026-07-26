@@ -557,21 +557,37 @@ stem = os.path.splitext(uploaded.name)[0]
 
 with st.spinner("Reading the document…"):
     if "CSV" in output_fmt:
-        files = export_to_csv(src_path, out_dir, cfg, logger)
+        export = export_to_csv(src_path, out_dir, cfg, logger)
+        files = export["files"]
+        csv_unparsed = export["unparsed_rows"]
         duration = time.time() - start
         if not files:
             st.markdown("""
-            <div class="notice fail"><span class="t">No tables found</span>
-            Nothing in this PDF matched a table structure.
+            <div class="notice fail"><span class="t">No data found</span>
+            Nothing in this PDF matched a table or a readable report layout.
             <span class="b">Try a different engine under Conversion settings, or check
             the pages actually contain tabular data.</span></div>
             """, unsafe_allow_html=True)
             st.stop()
+        csv_pill = ('<span class="pill held"><span class="dot"></span>Rows excluded</span>'
+                    if csv_unparsed else
+                    '<span class="pill ok"><span class="dot"></span>Complete</span>')
         st.markdown(f"""
         <h2 class="app-h2">Result</h2>
-        <div class="app-panel"><span class="pill ok"><span class="dot"></span>Complete</span>
+        <div class="app-panel">{csv_pill}
         <p class="app-help">{len(files)} CSV file(s) in {duration:.1f}s.</p></div>
         """, unsafe_allow_html=True)
+        # The excluded-row warning belongs on every output path, not just the
+        # Excel one - a CSV export that quietly omits rows is the exact failure
+        # this tool exists to prevent.
+        if csv_unparsed:
+            st.markdown(f"""
+            <div class="notice held"><span class="t">{csv_unparsed} row(s) excluded from this export</span>
+            They did not match the expected format and are <strong>not</strong> in the CSV.
+            <span class="b">Check them before using this data — each excluded row is written in
+            full to the newest log in
+            <span class="mono">{esc(cfg.get('log_dir', 'logs'))}/</span>.</span></div>
+            """, unsafe_allow_html=True)
         for path in files:
             with open(path, "rb") as fh:
                 st.download_button(f"Download {os.path.basename(path)}", fh.read(),

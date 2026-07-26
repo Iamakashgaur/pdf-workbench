@@ -53,8 +53,9 @@ for rather than approximately captured.
 - Handles digital, scanned and mixed PDFs; page type is detected automatically.
 - Three table engines tried in order; two are optional and often absent.
 - OCR for scanned pages requires Tesseract, which may not be installed.
-- Output: a formatted `.xlsx`, or one `.csv` per table. Batch runs also produce
-  a run-level summary workbook.
+- Output: a formatted `.xlsx`, or one `.csv` per extracted dataset — including
+  the order report, which the CSV path reads through the same cascade as Excel.
+  Batch runs also produce a run-level summary workbook.
 - **Rows failing validation are excluded and reported in four places** — console,
   log file, workbook metadata, and the batch summary. This reporting is the
   product's central promise and must stay prominent in any redesign.
@@ -83,7 +84,7 @@ expressive direction.
 
 - Verified against six live supplier invoices: **100 of 100 line items
   extracted, reconciling to the cent** ($91,948.90 across the six).
-- Automated test suite: 42 tests, all passing.
+- Automated test suite: 53 tests, all passing.
 - Real invoice PDFs exist locally but are **not** in the repository, and
   generated workbooks are git-ignored because they carry customer data.
 - No public customers, testimonials, benchmarks or pricing exist. Do not invent
