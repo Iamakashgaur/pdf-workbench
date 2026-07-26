@@ -42,6 +42,7 @@ from pdf_to_excel import (  # noqa: E402
     load_config, setup_logging, PDFProcessor,
     PDFClassifier, export_to_csv,
     DocumentToPDFConverter, DOC_TO_PDF_EXTENSIONS, libreoffice_present,
+    check_pdf_access, ACCESS_OK, ACCESS_PASSWORD_REQUIRED,
 )
 
 # The uploader decides the flow. Dropping a PDF extracts from it; dropping a
@@ -374,7 +375,7 @@ def reset_tmp() -> str:
     return d
 
 
-def stated_totals(pdf_path: str):
+def stated_totals(pdf_path: str, password: str = ""):
     """Read the report's own 'N Items - $X' header line, when present.
 
     This is what the team reconciles against by hand, so the interface should
@@ -382,7 +383,7 @@ def stated_totals(pdf_path: str):
     """
     try:
         import pdfplumber
-        with pdfplumber.open(pdf_path) as pdf:
+        with pdfplumber.open(pdf_path, password=password) as pdf:
             for page in pdf.pages[:2]:
                 for line in (page.extract_text() or "").split("\n"):
                     m = STATED_RE.match(line.strip())
@@ -606,12 +607,44 @@ if suffix != ".pdf":
                            f"{stem}.pdf", "application/pdf")
     st.stop()
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ENCRYPTED PDF — ask, do not fail
+# ─────────────────────────────────────────────────────────────────────────────
+access = check_pdf_access(src_path)
+if access == ACCESS_PASSWORD_REQUIRED:
+    st.markdown(f"""
+    <h2 class="app-h2">Document</h2>
+    <div class="app-panel">
+      <p class="app-label">Password required</p>
+      <p class="app-help"><span class="mono">{esc(uploaded.name)}</span> is
+      encrypted. Enter its password to read it — it is used for this conversion
+      only, is never written to the log or to <span class="mono">config.json</span>,
+      and is gone when you close the tab.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    pdf_password = st.text_input("PDF password", type="password",
+                                 label_visibility="collapsed",
+                                 placeholder="Password")
+    if not pdf_password:
+        st.stop()
+
+    if check_pdf_access(src_path, pdf_password) != ACCESS_OK:
+        st.markdown("""
+        <div class="notice fail"><span class="t">Password incorrect</span>
+        That password did not unlock the file.
+        <span class="b">Check it and try again.</span></div>
+        """, unsafe_allow_html=True)
+        st.stop()
+
+    cfg["pdf_password"] = pdf_password
+
 try:
-    info = PDFClassifier(logger).classify(src_path)
+    info = PDFClassifier(logger, cfg.get("pdf_password")).classify(src_path)
 except Exception:
     info = {"page_count": 0, "type": "unknown", "text_pages": [], "scanned_pages": []}
 
-stated = stated_totals(src_path)
+stated = stated_totals(src_path, cfg.get("pdf_password") or "")
 
 st.markdown(f"""
 <h2 class="app-h2">Document</h2>

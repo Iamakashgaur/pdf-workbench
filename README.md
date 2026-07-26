@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Iamakashgaur/PDF-to-Excel-Converter/actions/workflows/ci.yml/badge.svg)](https://github.com/Iamakashgaur/PDF-to-Excel-Converter/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.13-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-88%20passing-brightgreen)](test_pdf_to_excel.py)
+[![Tests](https://img.shields.io/badge/tests-96%20passing-brightgreen)](test_pdf_to_excel.py)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)
 
 Turns supplier order reports from PDF into reconciled Excel workbooks — and tells you,
@@ -94,7 +94,7 @@ being the moment you start hoping.
 | **Design under constraint** | Three extraction engines tried in order, two of them optional and often absent. Availability is import-gated; missing engines degrade honestly instead of crashing. |
 | **A performance fix** | `_PDFHandles` opens each document once per run instead of once per page, using explicit sentinels — a zero-page PDF is falsy, so truthiness checks leaked handles. |
 | **A measurement bug worth the comment** | `Tables Found` and `Rows Extracted` are deliberately separate. Conflating them displayed a 95-row report as "95 tables". |
-| **Test strategy** | 88 tests. Synthetic PDFs via reportlab for the pipeline; hand-built word-position fixtures for the geometry parser, so column logic is tested without a PDF in the loop; and a set that asserts this README still matches the code it documents. |
+| **Test strategy** | 96 tests. Synthetic PDFs via reportlab for the pipeline; hand-built word-position fixtures for the geometry parser, so column logic is tested without a PDF in the loop; and a set that asserts this README still matches the code it documents. |
 | **CI** | Ubuntu + Windows × Python 3.11/3.13, deliberately green *without* Camelot or Tabula. LibreOffice **is** installed on every leg, so `--to-pdf` is driven against a real `soffice` rather than a mock — and the Windows leg exercises the install-location fallback, since the installer there does not put `soffice` on `PATH`. |
 
 ## Known limitations
@@ -105,7 +105,8 @@ Stated plainly, because a tool that oversells itself is the problem this one exi
   **column-geometry** reader. If a page's geometry cannot be read at all, the
   last-resort flat-text parser only knows the built-in supplier report; other
   layouts fall through to generic text extraction rather than being guessed at.
-- Password-protected PDFs are unsupported.
+- An encrypted PDF needs its password supplied per run; there is no keychain
+  integration, and by design no way to store it in `config.json`.
 - Scanned pages need Tesseract installed. Without it they are skipped and reported,
   never silently dropped.
 - `java_path` in `config.json` is currently unused; put Java on `PATH` for tabula.
@@ -235,6 +236,30 @@ python pdf_to_excel.py -d ./pdfs/ -o ./output/
 python pdf_to_excel.py -d ./invoices/ -o ./results/ --preview
 ```
 
+### Encrypted PDFs
+
+```bash
+# Best: the password never enters shell history or a process listing
+export PDF_TO_EXCEL_PASSWORD='…'          # Windows: $env:PDF_TO_EXCEL_PASSWORD='…'
+python pdf_to_excel.py locked.pdf
+
+# Explicit, if you must
+python pdf_to_excel.py locked.pdf --password '…'
+```
+
+The CLI never prompts. `getpass` on Windows reads the console directly rather
+than stdin, so there is no reliable way to tell whether anyone is present to
+answer — a scheduled or piped run would sit waiting forever. It states what to
+supply and exits instead; the web UI is the interactive surface and asks there.
+
+**There is deliberately no `config.json` key for this.** That file is committed,
+so a password in it would be published by the next `git push` — and the tool
+warns if it finds one there rather than quietly using it.
+
+The two failure modes are reported separately, because they are different
+problems for whoever holds the file: *"Password required"* means none was given,
+*"Password incorrect"* means the one given did not unlock it.
+
 ### Documents → PDF
 
 The one direction that writes *into* PDF, for when a report arrives as `.docx` or
@@ -313,6 +338,8 @@ Options:
   --ocr-lang LANG       Tesseract language code (default: eng)
   --no-meta             Omit metadata sheet from output
   --keep-empty          Keep empty rows and columns
+  --password PASSWORD   Password for an encrypted PDF. Prefer the
+                        PDF_TO_EXCEL_PASSWORD environment variable
   --to-pdf              Convert documents INTO PDF via LibreOffice, instead of
                         reading a PDF. Works with -d for a folder
   --gui                 Print the GUI launch command and exit (does not start it)

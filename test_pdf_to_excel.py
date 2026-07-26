@@ -284,6 +284,21 @@ def create_parts_invoice_pdf(path: str) -> None:
     c.save()
 
 
+def encrypt_pdf(src: str, dest: str, user_password: str) -> None:
+    """Re-save a PDF with a real user password, using PyMuPDF."""
+    try:
+        import fitz
+    except ImportError:  # pragma: no cover - PyMuPDF is a core dependency
+        raise unittest.SkipTest("PyMuPDF not installed")
+
+    doc = fitz.open(src)
+    try:
+        doc.save(dest, encryption=fitz.PDF_ENCRYPT_AES_256,
+                 owner_pw=user_password, user_pw=user_password)
+    finally:
+        doc.close()
+
+
 PARTS_INVOICE_LAYOUT = {
     "name": "parts_invoice",
     "columns": [
@@ -423,6 +438,49 @@ class TestDocsMatchCode(unittest.TestCase):
             )
         self.assertIn('id="reference"', html)
         self.assertIn("README.md", html)
+
+    def test_cli_output_is_console_safe(self):
+        """No non-ASCII in anything the CLI can print.
+
+        This has bitten three times: box-drawing characters in requirements.txt
+        broke `pip install -r`, and a "→" in two different progress lines
+        raised UnicodeEncodeError. Windows encodes console output with the
+        legacy codepage, so any run whose output is piped or redirected to a
+        file dies on the first such character - part way through, after real
+        work has already happened.
+
+        Docstrings are exempt: they are never encoded to a stream. app.py is
+        exempt too - its output goes to a browser as UTF-8.
+        """
+        import ast
+
+        source = self._read("pdf_to_excel.py")
+        tree = ast.parse(source)
+
+        docstrings = set()
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if not isinstance(node, (ast.Module, ast.ClassDef,
+                                     ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                docstrings.add(id(body[0].value))
+
+        offenders = []
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and id(node) not in docstrings):
+                bad = sorted({c for c in node.value if ord(c) > 127})
+                if bad:
+                    offenders.append(f"line {node.lineno}: {bad} in {node.value[:40]!r}")
+
+        self.assertEqual(
+            offenders, [],
+            "non-ASCII in a string the CLI may print; use an ASCII equivalent:\n  "
+            + "\n  ".join(offenders)
+        )
 
     def test_readme_screenshot_exists(self):
         # A README whose lead image 404s looks worse than one with no image.
@@ -1268,6 +1326,104 @@ class TestMixedTableAndReport(unittest.TestCase):
         result = PDFProcessor(self.cfg, self.logger).process(self.pdf, out)
         self.assertTrue(result["success"], result)
         self.assertGreaterEqual(result["rows_extracted"], 2)
+
+
+class TestEncryptedPDFs(unittest.TestCase):
+    """A locked file must say it is locked, and say which problem it has."""
+
+    PASSWORD = "correct horse battery"
+
+    def setUp(self):
+        self.tmp = make_test_dir()
+        self.cfg = load_config()
+        self.cfg["log_dir"] = self.tmp
+        self.logger = setup_logging(self.tmp)
+
+        plain = os.path.join(self.tmp, "plain.pdf")
+        create_order_report_pdf(plain)
+        self.locked = os.path.join(self.tmp, "locked.pdf")
+        encrypt_pdf(plain, self.locked, self.PASSWORD)
+        self.plain = plain
+
+    def tearDown(self):
+        close_logger(self.logger)
+        shutil.rmtree(self.tmp)
+
+    def _process(self, password=None):
+        cfg = dict(self.cfg)
+        if password is not None:
+            cfg["pdf_password"] = password
+        out = os.path.join(self.tmp, "out.xlsx")
+        return PDFProcessor(cfg, self.logger).process(self.locked, out)
+
+    # ── the three states are distinguished ───────────────────────────────
+    def test_access_states(self):
+        from pdf_to_excel import (
+            check_pdf_access, ACCESS_OK,
+            ACCESS_PASSWORD_REQUIRED, ACCESS_PASSWORD_INCORRECT,
+        )
+        self.assertEqual(check_pdf_access(self.plain), ACCESS_OK)
+        self.assertEqual(check_pdf_access(self.locked), ACCESS_PASSWORD_REQUIRED)
+        self.assertEqual(check_pdf_access(self.locked, "wrong"),
+                         ACCESS_PASSWORD_INCORRECT)
+        self.assertEqual(check_pdf_access(self.locked, self.PASSWORD), ACCESS_OK)
+
+    def test_no_password_is_reported_not_crashed(self):
+        r = self._process()
+        self.assertFalse(r["success"])
+        self.assertIn("Password required", r["error"])
+        self.assertIn("PDF_TO_EXCEL_PASSWORD", r["error"])
+
+    def test_wrong_password_says_so_specifically(self):
+        # Distinct from "required": the holder of the file needs to know which
+        # of the two problems they have.
+        r = self._process("nope")
+        self.assertFalse(r["success"])
+        self.assertIn("Password incorrect", r["error"])
+
+    def test_correct_password_extracts_normally(self):
+        r = self._process(self.PASSWORD)
+        self.assertTrue(r["success"], r["error"])
+        self.assertEqual(r["rows_extracted"], 2)
+        self.assertEqual(r["unparsed_rows"], 0)
+
+        wb = load_workbook(os.path.join(self.tmp, "out.xlsx"))
+        data = [s for s in wb.sheetnames if not s.startswith("_")]
+        ws = wb[data[0]]
+        order_nos = [row[5] for row in ws.iter_rows(values_only=True)]
+        self.assertIn("A1B2C3D4", order_nos)
+        wb.close()
+
+    def test_locked_file_is_not_mistaken_for_a_scan(self):
+        # An encrypted document reports pages but returns no text, so a naive
+        # classifier would call every page scanned and send it to OCR.
+        from pdf_to_excel import PDFClassifier
+        info = PDFClassifier(self.logger).classify(self.locked)
+        self.assertEqual(info["type"], "encrypted")
+        self.assertEqual(info["scanned_pages"], [])
+
+    def test_password_never_reaches_the_log(self):
+        self._process(self.PASSWORD)
+        for name in os.listdir(self.tmp):
+            if not name.endswith(".log"):
+                continue
+            with open(os.path.join(self.tmp, name), encoding="utf-8") as fh:
+                self.assertNotIn(self.PASSWORD, fh.read(),
+                                 f"password was written to {name}")
+
+    def test_config_file_password_is_warned_about(self):
+        # config.json is committed; a credential in it would be published.
+        path = os.path.join(self.tmp, "with_password.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"pdf_password": "hunter2"}, fh)
+
+        import io as _io
+        import contextlib
+        buf = _io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            load_config(path)
+        self.assertIn("pdf_password", buf.getvalue())
+        self.assertIn("committed", buf.getvalue())
 
 
 class TestConfigurableLayouts(unittest.TestCase):

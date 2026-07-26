@@ -75,7 +75,9 @@ for rather than approximately captured.
   `Rows Extracted` (data rows). Conflating them has already caused confusion.
 - Streamlit constrains the UI: styling is applied over its own DOM, so the
   design must work with its widget set rather than assume arbitrary markup.
-- Password-protected PDFs are unsupported.
+- Encrypted PDFs are read when the password is supplied per run (CLI flag,
+  environment variable, terminal prompt, or a field in the web UI). It is
+  deliberately not storable in config.json, which is committed.
 
 ## Brand Commitments
 
@@ -96,7 +98,7 @@ expressive direction.
 
 - Verified against six live supplier invoices: **100 of 100 line items
   extracted, reconciling to the cent** ($91,948.90 across the six).
-- Automated test suite: 88 tests, all passing.
+- Automated test suite: 96 tests, all passing.
 - Real invoice PDFs exist locally but are **not** in the repository, and
   generated workbooks are git-ignored because they carry customer data.
 - No public customers, testimonials, benchmarks or pricing exist. Do not invent

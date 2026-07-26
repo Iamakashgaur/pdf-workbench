@@ -123,6 +123,18 @@ def load_config(config_path: str = "config.json") -> dict:
             with open(config_path) as f:
                 user_cfg = json.load(f)
             cfg.update(user_cfg)
+            # config.json is committed. A credential in it would be published
+            # by the next `git push`, so say so loudly rather than honouring it
+            # quietly.
+            leaked = [k for k in user_cfg
+                      if "password" in k.lower() or "passwd" in k.lower()]
+            if leaked:
+                print(
+                    f"[WARN] {config_path} contains {leaked}. This file is "
+                    f"committed to the repository - a password does not belong "
+                    f"in it. Use --password or the {PASSWORD_ENV_VAR} "
+                    f"environment variable instead."
+                )
         except Exception as e:
             print(f"[WARN] Could not load {config_path}: {e}. Using defaults.")
     return cfg
@@ -182,9 +194,13 @@ class _PDFHandles:
     otherwise be mistaken for "not open" and never closed.
     """
 
-    def __init__(self, pdf_path: str, logger: logging.Logger):
+    def __init__(self, pdf_path: str, logger: logging.Logger,
+                 password: Optional[str] = None):
         self.pdf_path = pdf_path
         self.logger = logger
+        # Empty string is the right default: both libraries treat it as "no
+        # password", and it keeps every call site free of None-handling.
+        self.password = password or ""
         self._plumber: Any = _UNOPENED
         self._fitz: Any = _UNOPENED
 
@@ -194,7 +210,8 @@ class _PDFHandles:
                 self._plumber = _OPEN_FAILED
             else:
                 try:
-                    self._plumber = pdfplumber.open(self.pdf_path)
+                    self._plumber = pdfplumber.open(
+                        self.pdf_path, password=self.password)
                 except Exception as e:
                     self.logger.debug(f"pdfplumber open failed for '{self.pdf_path}': {e}")
                     self._plumber = _OPEN_FAILED
@@ -206,7 +223,17 @@ class _PDFHandles:
                 self._fitz = _OPEN_FAILED
             else:
                 try:
-                    self._fitz = fitz.open(self.pdf_path)
+                    doc = fitz.open(self.pdf_path)
+                    # An encrypted document opens but yields nothing until it
+                    # is authenticated, so a page loop would quietly read an
+                    # empty file. Treat a failed unlock as a failed open.
+                    if doc.needs_pass and not doc.authenticate(self.password):
+                        self.logger.debug(
+                            f"PyMuPDF could not unlock '{self.pdf_path}'")
+                        doc.close()
+                        self._fitz = _OPEN_FAILED
+                    else:
+                        self._fitz = doc
                 except Exception as e:
                     self.logger.debug(f"PyMuPDF open failed for '{self.pdf_path}': {e}")
                     self._fitz = _OPEN_FAILED
@@ -230,6 +257,49 @@ class _PDFHandles:
         self.close()
 
 
+#: Runtime-only. A password is deliberately NOT a config.json setting: that
+#: file is committed, and a credential in a tracked file is a footgun this tool
+#: should not hand anyone. It arrives from --password or the environment.
+PASSWORD_ENV_VAR = "PDF_TO_EXCEL_PASSWORD"
+
+ACCESS_OK = "ok"
+ACCESS_PASSWORD_REQUIRED = "password_required"
+ACCESS_PASSWORD_INCORRECT = "password_incorrect"
+ACCESS_UNREADABLE = "unreadable"
+
+
+def check_pdf_access(pdf_path: str, password: Optional[str] = None) -> str:
+    """Say whether a PDF can actually be read, before anything tries.
+
+    Returns one of the ACCESS_* constants. The distinction between "needs a
+    password" and "that password is wrong" matters: they are different things
+    for the person holding the file, and collapsing them into one failure would
+    leave them guessing which.
+
+    Without PyMuPDF this cannot be determined, so it reports ACCESS_OK and lets
+    the normal path fail in its own way rather than inventing a verdict.
+    """
+    if not PYMUPDF_AVAILABLE:
+        return ACCESS_OK
+
+    doc = None
+    try:
+        doc = fitz.open(pdf_path)
+        if not doc.needs_pass:
+            return ACCESS_OK
+        if password and doc.authenticate(password):
+            return ACCESS_OK
+        return ACCESS_PASSWORD_INCORRECT if password else ACCESS_PASSWORD_REQUIRED
+    except Exception:
+        return ACCESS_UNREADABLE
+    finally:
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                pass
+
+
 def _flush_page_cache(page: Any) -> None:
     """Release a pdfplumber page's cached objects.
 
@@ -251,8 +321,9 @@ def _flush_page_cache(page: Any) -> None:
 class PDFClassifier:
     """Detect whether PDF is text-based, scanned, or mixed."""
 
-    def __init__(self, logger: logging.Logger):
+    def __init__(self, logger: logging.Logger, password: Optional[str] = None):
         self.logger = logger
+        self.password = password or ""
 
     def classify(self, pdf_path: str) -> Dict[str, Any]:
         result = {
@@ -273,6 +344,16 @@ class PDFClassifier:
         doc = None
         try:
             doc = fitz.open(pdf_path)
+            # An encrypted document reports pages but returns no text until it
+            # is unlocked, which would classify every page as scanned and send
+            # a perfectly readable file to OCR.
+            if doc.needs_pass and not doc.authenticate(self.password):
+                self.logger.error(
+                    f"'{pdf_path}' is password-protected and was not unlocked."
+                )
+                result["type"] = "encrypted"
+                return result
+
             result["page_count"] = len(doc)
 
             for page_num, page in enumerate(doc):
@@ -361,7 +442,7 @@ class OCRProcessor:
             return None
         if handles is not None:
             return self._render_page(handles.fitz(), page_num)
-        with _PDFHandles(pdf_path, self.logger) as own:
+        with _PDFHandles(pdf_path, self.logger, self.config.get("pdf_password")) as own:
             return self._render_page(own.fitz(), page_num)
 
     def _render_page(self, doc: Optional[Any], page_num: int) -> Optional[Any]:
@@ -468,7 +549,7 @@ class TableExtractor:
         results = []
 
         # One open document for the whole page loop instead of one per page.
-        with _PDFHandles(pdf_path, self.logger) as handles:
+        with _PDFHandles(pdf_path, self.logger, self.config.get("pdf_password")) as handles:
             for page_num in page_nums:
                 tables = self._extract_page(pdf_path, page_num, handles)
                 for i, df in enumerate(tables):
@@ -528,7 +609,7 @@ class TableExtractor:
             return []
         if handles is not None:
             return self._pdfplumber_page_tables(handles.plumber(), page_num)
-        with _PDFHandles(pdf_path, self.logger) as own:
+        with _PDFHandles(pdf_path, self.logger, self.config.get("pdf_password")) as own:
             return self._pdfplumber_page_tables(own.plumber(), page_num)
 
     def _pdfplumber_page_tables(
@@ -1112,6 +1193,7 @@ class TextExtractor:
 
     def __init__(self, logger: logging.Logger, config: Optional[dict] = None):
         self.logger = logger
+        self.config = config or {}
         # Report lines that matched no known row shape during the last extract().
         self.dropped_rows: List[str] = []
         self.column_parser = ReportColumnParser(
@@ -1124,7 +1206,7 @@ class TextExtractor:
         results = []
         self.dropped_rows = []
         # One open document for the whole page loop instead of one per page.
-        with _PDFHandles(pdf_path, self.logger) as handles:
+        with _PDFHandles(pdf_path, self.logger, self.config.get("pdf_password")) as handles:
             pdf = handles.plumber()
             for page_num in page_nums:
                 text = self._extract_page_text(pdf_path, page_num, handles)
@@ -1239,7 +1321,7 @@ class TextExtractor:
     ) -> str:
         own: Optional[_PDFHandles] = None
         if handles is None:
-            own = _PDFHandles(pdf_path, self.logger)
+            own = _PDFHandles(pdf_path, self.logger, self.config.get("pdf_password"))
             handles = own
         try:
             # Prefer pdfplumber for layout-aware extraction
@@ -1633,7 +1715,7 @@ class PDFProcessor:
     def __init__(self, config: dict, logger: logging.Logger):
         self.config = config
         self.logger = logger
-        self.classifier = PDFClassifier(logger)
+        self.classifier = PDFClassifier(logger, config.get("pdf_password"))
         self.table_extractor = TableExtractor(config, logger)
         self.text_extractor = TextExtractor(logger, config)
         self.ocr = OCRProcessor(config, logger)
@@ -1719,7 +1801,7 @@ class PDFProcessor:
                     "Install tesseract-ocr and pytesseract."
                 )
             # One open document for the whole OCR loop instead of one per page.
-            with _PDFHandles(pdf_path, self.logger) as ocr_handles:
+            with _PDFHandles(pdf_path, self.logger, self.config.get("pdf_password")) as ocr_handles:
                 for page_num in info["scanned_pages"]:
                     img = self.ocr.page_to_image(pdf_path, page_num, ocr_handles)
                     if img is None:
@@ -1771,6 +1853,19 @@ class PDFProcessor:
 
         if os.path.getsize(pdf_path) == 0:
             result["error"] = "Empty file"
+            return result
+
+        # Checked up front so an encrypted file gets a message naming the fix,
+        # rather than an empty extraction that looks like an unreadable PDF.
+        access = check_pdf_access(pdf_path, self.config.get("pdf_password"))
+        if access == ACCESS_PASSWORD_REQUIRED:
+            result["error"] = (
+                "Password required. Pass --password, or set "
+                f"{PASSWORD_ENV_VAR} in the environment."
+            )
+            return result
+        if access == ACCESS_PASSWORD_INCORRECT:
+            result["error"] = "Password incorrect for this PDF"
             return result
 
         try:
@@ -1952,7 +2047,7 @@ class BatchProcessor:
                 r = self.processor.process(str(pdf), out, preview=preview)
                 results.append(r)
                 status = "OK" if r["success"] else f"FAIL: {r['error']}"
-                print(f"  → {status}")
+                print(f"  -> {status}")
 
         if self.config.get("batch_summary_report", True):
             self._write_summary_report(results, output_dir)
@@ -2483,6 +2578,10 @@ Examples:
                    help="Omit metadata sheet")
     p.add_argument("--keep-empty", action="store_true",
                    help="Keep empty rows and columns")
+    p.add_argument("--password", default=None,
+                   help="Password for an encrypted PDF. Prefer the "
+                        f"{PASSWORD_ENV_VAR} environment variable: an argument "
+                        "is visible in shell history and process listings")
     p.add_argument("--to-pdf", action="store_true",
                    help="Convert documents INTO PDF via headless LibreOffice "
                         "(.docx/.xlsx/.pptx/.odt/.rtf/.txt/.html and more), "
@@ -2512,6 +2611,9 @@ def main() -> int:
 
     cfg = load_config(args.config)
     logger = setup_logging(cfg.get("log_dir", "logs"), verbose=args.verbose)
+
+    # Runtime only, never persisted: see PASSWORD_ENV_VAR.
+    cfg["pdf_password"] = args.password or os.environ.get(PASSWORD_ENV_VAR)
 
     # Apply CLI overrides
     if args.method:
@@ -2602,6 +2704,12 @@ def main() -> int:
             _print(f"[yellow]{warn}[/yellow]" if RICH_AVAILABLE else warn)
         return 0
 
+    # No interactive password prompt, deliberately. getpass on Windows reads
+    # the console directly rather than stdin, so `isatty()` does not reliably
+    # predict whether anyone is there to answer - a scheduled or piped run can
+    # sit waiting forever. Hanging is a worse failure than a clear message, so
+    # the CLI states what to supply and exits; the web UI is the interactive
+    # surface and asks there.
     output_path = args.output or os.path.join(
         cfg.get("output_dir", "output"), f"{stem}_{ts}.xlsx"
     )
@@ -2610,7 +2718,7 @@ def main() -> int:
         console.print(Panel(
             f"[bold]Input:[/bold]  {pdf_path}\n"
             f"[bold]Output:[/bold] {output_path}",
-            title="PDF → Excel", border_style="blue"
+            title="PDF to Excel", border_style="blue"
         ))
 
     processor = PDFProcessor(cfg, logger)
@@ -2622,7 +2730,7 @@ def main() -> int:
             f"{result['pages']} pages | "
             f"{result['tables_found']} tables | "
             f"{result['rows_extracted']} rows | "
-            f"{result['sheets_created']} sheets → {output_path}"
+            f"{result['sheets_created']} sheets -> {output_path}"
         )
         _print(f"[green]{msg}[/green]" if RICH_AVAILABLE else msg)
         if result["unparsed_rows"]:
