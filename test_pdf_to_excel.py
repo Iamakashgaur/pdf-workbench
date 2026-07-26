@@ -1072,6 +1072,77 @@ class TestWebApp(unittest.TestCase):
     screen at once.
     """
 
+    APP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
+
+    class _FakeUpload:
+        """Stands in for Streamlit's UploadedFile.
+
+        AppTest cannot drive a file_uploader, so st.file_uploader is patched to
+        hand the app one of these. Only .name and .getvalue() are read.
+        """
+
+        def __init__(self, name: str, data: bytes = b"not a real document"):
+            self.name = name
+            self._data = data
+
+        def getvalue(self) -> bytes:
+            return self._data
+
+    def _run_with_upload(self, filename, libreoffice):
+        """Render app.py as if `filename` had been uploaded."""
+        try:
+            from streamlit.testing.v1 import AppTest
+        except ImportError:
+            self.skipTest("streamlit.testing.v1 unavailable")
+
+        import streamlit as st
+        import pdf_to_excel as module
+
+        # app.py does `from pdf_to_excel import libreoffice_present`, and that
+        # import runs inside AppTest's execution of the script - so patching the
+        # module attribute first is what the app ends up binding.
+        with unittest.mock.patch.object(
+            module, "libreoffice_present", lambda cfg=None: libreoffice
+        ), unittest.mock.patch.object(
+            st, "file_uploader", return_value=self._FakeUpload(filename)
+        ):
+            at = AppTest.from_file(self.APP, default_timeout=60).run()
+
+        self.assertFalse(
+            at.exception,
+            f"app.py raised: {[e.value for e in at.exception]}",
+        )
+        return at
+
+    def test_missing_libreoffice_is_explained_before_the_action(self):
+        # The operator must learn the engine is absent from the document panel,
+        # not by clicking a button that cannot work.
+        at = self._run_with_upload("memo.docx", libreoffice=False)
+        body = " ".join(m.value for m in at.markdown)
+
+        self.assertIn("LibreOffice required", body)
+        self.assertIn("libreoffice_path", body)          # how to fix it
+        self.assertIn("Missing", body)                   # the Engine metric
+        self.assertIn("Reading PDFs is unaffected", body)
+        # Amber is reserved for excluded rows; a missing dependency must not
+        # borrow it (DESIGN.md rule 1).
+        self.assertNotIn('notice held', body)
+        # And no action is offered that could not succeed.
+        self.assertEqual(
+            [b for b in at.button if "Convert" in b.label], []
+        )
+
+    def test_present_libreoffice_offers_the_conversion(self):
+        at = self._run_with_upload("memo.docx", libreoffice=True)
+        body = " ".join(m.value for m in at.markdown)
+
+        self.assertNotIn("LibreOffice required", body)
+        self.assertIn("Ready", body)
+        self.assertTrue(
+            [b for b in at.button if b.label == "Convert to PDF"],
+            f"no Convert to PDF button; buttons were {[b.label for b in at.button]}",
+        )
+
     def test_first_viewport_renders_without_exception(self):
         try:
             from streamlit.testing.v1 import AppTest
